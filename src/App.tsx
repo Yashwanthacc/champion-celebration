@@ -995,7 +995,7 @@ function App() {
 
             <>
 
-              <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>â† Back to workspace</button>
+              <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>← Back to workspace</button>
 
               <div className="dashboard-welcome">
 
@@ -1017,7 +1017,7 @@ function App() {
 
               </div>
 
-              <div className="dashboard-notice"><span>â“˜</span><p><strong>Development database</strong><br />Attendee records are saved in the connected database. Use fictional test records until hosting and privacy approvals are complete.</p></div>
+              <div className="dashboard-notice"><span>Info:</span><p><strong>Development database</strong><br />Attendee records are saved in the connected database. Use fictional test records until hosting and privacy approvals are complete.</p></div>
 
               {attendeeMessage && <p className="attendee-form-message" role="status">{attendeeMessage}</p>}
 
@@ -1051,7 +1051,7 @@ function App() {
 
                 >
 
-                  {showAttendeeForm ? 'âˆ’ Close form' : '+ Add attendee'}
+                  {showAttendeeForm ? '- Close form' : '+ Add attendee'}
 
                 </button>
 
@@ -1227,7 +1227,7 @@ function App() {
 
                   <div className="registration-empty">
 
-                    <span>âŒ•</span><h3>No attendees found</h3><p>Try a different search term or select another status.</p>
+                    <span>Search:</span><h3>No attendees found</h3><p>Try a different search term or select another status.</p>
 
                     <button type="button" className="registration-reset" onClick={() => { setSearchTerm(''); setRegistrationFilter('All') }}>Clear search and filters</button>
 
@@ -1245,7 +1245,7 @@ function App() {
 
             <div className="cc-feature-page">
 
-              <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>â† Back to workspace</button>
+              <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>← Back to workspace</button>
 
               <div className="dashboard-welcome"><div><p className="section-kicker">QR WRISTBANDS</p><h1>Band<br/><span>management.</span></h1><p className="login-description">Assign a unique QR token to an attendee and print a simple wristband label.</p></div></div>
 
@@ -1255,7 +1255,7 @@ function App() {
 
               <div className="registration-toolbar"><div className="registration-search"><label htmlFor="band-search">Find attendee</label><input id="band-search" type="search" placeholder="Search by name or EID" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} /></div><button className="add-attendee-button" type="button" onClick={() => void loadWristbands()} disabled={isLoadingWristbands}>{isLoadingWristbands ? 'Loading...' : 'Refresh QR bands'}</button></div>
 
-              <div className="cc-qr-grid">{attendees.filter(a => a.status === 'Registered' && (a.name.toLowerCase().includes(searchTerm.toLowerCase()) || a.eid.toLowerCase().includes(searchTerm.toLowerCase()))).map(a => { const band = wristbands.find(b => b.eid === a.eid); return <article className="cc-qr-card" key={a.eid}><h3>{a.name}</h3><p>{a.eid} Â· {a.department}</p>{band && wristbandImages[a.eid] ? <img className="cc-qr-image" src={wristbandImages[a.eid]} alt={`QR wristband for ${a.eid}`} /> : <div className="cc-qr-placeholder">QR not assigned</div>}<div className="cc-qr-actions"><button className="attendee-save-button" type="button" onClick={() => void assignWristband(a.eid)}>{band ? 'Refresh QR' : 'Generate QR'}</button><button className="attendee-cancel-button" type="button" disabled={!band || !wristbandImages[a.eid]} onClick={() => printWristband(a.eid)}>Print</button></div></article> })}</div>
+              <div className="cc-qr-grid">{attendees.filter(a => a.status === 'Registered' && (a.name.toLowerCase().includes(searchTerm.toLowerCase()) || a.eid.toLowerCase().includes(searchTerm.toLowerCase()))).map(a => { const band = wristbands.find(b => b.eid === a.eid); return <article className="cc-qr-card" key={a.eid}><h3>{a.name}</h3><p>{a.eid} - {a.department}</p>{band && wristbandImages[a.eid] ? <img className="cc-qr-image" src={wristbandImages[a.eid]} alt={`QR wristband for ${a.eid}`} /> : <div className="cc-qr-placeholder">QR not assigned</div>}<div className="cc-qr-actions"><button className="attendee-save-button" type="button" onClick={() => void assignWristband(a.eid)}>{band ? 'Refresh QR' : 'Generate QR'}</button><button className="attendee-cancel-button" type="button" disabled={!band || !wristbandImages[a.eid]} onClick={() => printWristband(a.eid)}>Print</button></div></article> })}</div>
 
               {attendees.filter(a => a.status === 'Registered').length === 0 && <p>No registered attendees yet. Add a test attendee first.</p>}
 
@@ -1267,7 +1267,7 @@ function App() {
 
             <div className="cc-feature-page">
 
-              <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>â† Back to workspace</button>
+              <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>← Back to workspace</button>
 
               <div className="dashboard-welcome"><div><p className="section-kicker">EVENT ENTRY</p><h1>Attendee<br/><span>check-in.</span></h1><p className="login-description">Scan the attendee's QR wristband or enter their employee ID manually.</p></div></div>
 
@@ -1279,7 +1279,7 @@ function App() {
 
                 <section className="cc-checkin-success" role="status" aria-live="polite">
 
-                  <h2>âœ“ Attendee checked in</h2>
+                  <h2>Attendee checked in</h2>
 
                   <p><strong>Name:</strong> {checkedInAttendee.name}</p>
 
@@ -1301,7 +1301,7 @@ function App() {
 
                   <div className="cc-scanner-controls">
 
-                    <button className="add-attendee-button" type="button" disabled={scannerRunning} onClick={() => void startQrScanner()}>{scannerRunning ? 'Scanner runningâ€¦' : 'Start camera scanner'}</button>
+                    <button className="add-attendee-button" type="button" disabled={scannerRunning} onClick={() => void startQrScanner()}>{scannerRunning ? 'Scanner running...' : 'Start camera scanner'}</button>
 
                     <button className="attendee-cancel-button" type="button" disabled={!scannerRunning} onClick={() => void stopQrScanner()}>Stop scanner</button>
 
@@ -1311,11 +1311,11 @@ function App() {
 
                   <form className="cc-manual-checkin" onSubmit={e => { e.preventDefault(); void submitCheckin(checkinInput, 'EID') }}>
 
-                    <label htmlFor="cc-checkin-eid">Manual check-in Â· Employee ID</label>
+                    <label htmlFor="cc-checkin-eid">Manual check-in - Employee ID</label>
 
                     <input id="cc-checkin-eid" value={checkinInput} onChange={e => setCheckinInput(e.target.value)} placeholder="e.g. DEMO006" required/>
 
-                    <button className="attendee-save-button" type="submit" disabled={isCheckingIn}>{isCheckingIn ? 'Checking inâ€¦' : 'Record check-in'}</button>
+                    <button className="attendee-save-button" type="submit" disabled={isCheckingIn}>{isCheckingIn ? 'Checking in...' : 'Record check-in'}</button>
 
                   </form>
 
@@ -1327,7 +1327,7 @@ function App() {
 
           )}
 
-          <button className="dashboard-signout" type="button" onClick={handleSignOut}>Sign out <span>â†’</span></button>
+          <button className="dashboard-signout" type="button" onClick={handleSignOut}>Sign out <span>→</span></button>
 
         </section>
 
@@ -1335,7 +1335,7 @@ function App() {
 
           <span>CHAMPION CELEBRATION</span>
 
-          <span>MADE FOR CHAMPIONS <span className="gold-star">âœ¦</span></span>
+          <span>MADE FOR CHAMPIONS <span className="gold-star">*</span></span>
 
         </footer>
 
@@ -1367,7 +1367,7 @@ function App() {
 
           <p className="login-description">Your event. Your team. One unforgettable celebration. Sign in to access the Champion Celebration staff portal.</p>
 
-          <div className="login-promise"><span className="promise-icon">âœ¦</span><div><strong>One team. One celebration.</strong><p>Event operations, made simple.</p></div></div>
+          <div className="login-promise"><span className="promise-icon">*</span><div><strong>One team. One celebration.</strong><p>Event operations, made simple.</p></div></div>
 
         </div>
 
@@ -1395,19 +1395,19 @@ function App() {
 
             </div>
 
-            <button className="explore-button login-button" type="submit" disabled={isLoading}>{isLoading ? 'Signing in...' : 'Sign in'}{!isLoading && <span>â†’</span>}</button>
+            <button className="explore-button login-button" type="submit" disabled={isLoading}>{isLoading ? 'Signing in...' : 'Sign in'}{!isLoading && <span>→</span>}</button>
 
           </form>
 
           {message && <p className="login-message" role="alert" aria-live="polite">{message}</p>}
 
-          <div className="security-note"><span>â—‡</span><span>Authorised event staff only</span></div>
+          <div className="security-note"><span>*</span><span>Authorised event staff only</span></div>
 
         </div>
 
       </section>
 
-      <footer className="site-footer"><span>CHAMPION CELEBRATION</span><span>MADE FOR CHAMPIONS <span className="gold-star">âœ¦</span></span></footer>
+      <footer className="site-footer"><span>CHAMPION CELEBRATION</span><span>MADE FOR CHAMPIONS <span className="gold-star">*</span></span></footer>
 
     </main>
 
