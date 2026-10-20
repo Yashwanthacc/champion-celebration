@@ -1,0 +1,74 @@
+
+# Dependencies and build output
+node_modules/
+dist/
+dist-ssr/
+.wrangler/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Environment variables and local secrets
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+
+# Password reset and sensitive admin files
+reset-admin*
+*password-reset*
+*password-reset*
+
+# Attendee and event data
+*attendee*.xlsx
+*attendee*.xls
+*attendee*.csv
+*wristband*.xlsx
+*wristband*.xls
+*wristband*.csv
+*checkin*.csv
+*check-in*.csv
+*qr*token*
+*.sqlite
+*.sqlite3
+*.db
+
+# Local files
+*.local
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Temporary authentication diagnostics and admin utilities
+remote-hash.json
+create-admin-hash.mjs
+test-admin-password.mjs
+test-remote-login.mjs
+verify-admin-hash.mjs
+verify-admin-login.mjs
+verify-admin-hash.sql
+wrangler.toml.backup
+
+# Password reset utilities
+reset-admin*
+verify-remote-hash.mjs
+
+# Local demo admin utility
+worker/create-demo-admin.ts
+
+# Local admin password utilities
+reset-admin-password.mjs
+test-admin-password.mjs
