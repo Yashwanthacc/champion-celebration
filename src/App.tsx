@@ -921,150 +921,81 @@ function App() {
         <section className="dashboard-content">
 
           {activePage === 'home' && (
-
             <>
-
-              <div className="dashboard-welcome">
-
+              <div className="dashboard-welcome cc-home-welcome">
                 <div>
-
-                  <p className="section-kicker">THE TEAM BEHIND THE MAGIC</p>
-
-                  <h1>Welcome to the<br /><span>control centre.</span></h1>
-
+                  <p className="section-kicker">CHAMPION CELEBRATION</p>
+                  <h1>Event<br /><span>workspace.</span></h1>
                   <p className="login-description">
-
-                    Your event operations start here. Manage registrations,
-
-                    wristbands and attendee check-in from one place.
-
+                    One place to manage attendees, issue QR wristbands and check guests in.
                   </p>
-
                 </div>
-
                 <div className="dashboard-user">
-
                   <span className="user-avatar">{signedInStaff.staffId.slice(0, 2).toUpperCase()}</span>
-
                   <div><strong>{signedInStaff.staffId}</strong><p>{signedInStaff.role.toUpperCase()}</p></div>
+                </div>
+              </div>
 
+              <section className="cc-event-workspace" aria-labelledby="cc-workspace-title">
+                <div className="cc-workspace-heading">
+                  <div>
+                    <p className="section-kicker">EVENT OPERATIONS</p>
+                    <h2 id="cc-workspace-title">What would you like to do?</h2>
+                  </div>
+                  <span className="dashboard-status"><span className="status-dot" />Signed in</span>
                 </div>
 
+                <button
+                  className="cc-primary-action"
+                  type="button"
+                  onClick={() => {
+                    setActivePage('checkin')
+                    setCheckinError('')
+                    setCheckinMessage('')
+                    setCheckedInAttendee(null)
+                  }}
+                >
+                  <span className="cc-primary-icon" aria-hidden="true">⌗</span>
+                  <span className="cc-primary-copy">
+                    <strong>Scan QR / Check in</strong>
+                    <span>Scan an attendee's wristband or enter their employee ID.</span>
+                  </span>
+                  <span className="cc-primary-arrow" aria-hidden="true">→</span>
+                </button>
+
+                <div className="cc-quick-actions" aria-label="Other event tasks">
+                  <button type="button" className="cc-quick-action" onClick={() => { setActivePage('registration'); void loadAttendees() }}>
+                    <span className="cc-quick-icon" aria-hidden="true">♙</span>
+                    <span><strong>Attendees</strong><small>Search and update registrations</small></span>
+                    <span className="cc-quick-arrow" aria-hidden="true">→</span>
+                  </button>
+                  <button type="button" className="cc-quick-action" onClick={() => { setActivePage('wristbands'); setCheckinError(''); setCheckinMessage(''); void loadWristbands() }}>
+                    <span className="cc-quick-icon" aria-hidden="true">◇</span>
+                    <span><strong>QR wristbands</strong><small>Assign and print attendee QR codes</small></span>
+                    <span className="cc-quick-arrow" aria-hidden="true">→</span>
+                  </button>
+                </div>
+
+                <div className="cc-attendee-summary">
+                  <div><span>Saved attendees</span><strong>{attendees.length}</strong></div>
+                  <div><span>Registered</span><strong>{registeredCount}</strong></div>
+                  <div><span>Pending</span><strong>{pendingCount}</strong></div>
+                  <div><span>Cancelled</span><strong>{cancelledCount}</strong></div>
+                </div>
+              </section>
+
+              <div className="dashboard-notice">
+                <span aria-hidden="true">ⓘ</span>
+                <p><strong>Before the event</strong><br />Confirm attendee records, assign QR wristbands, then use Scan QR / Check in at the entrance.</p>
               </div>
-
-              <div className="dashboard-section-heading">
-
-                <div><p className="section-kicker">EVENT OPERATIONS</p><h2>Your workspace</h2></div>
-
-                <span className="dashboard-status"><span className="status-dot" />Signed in</span>
-
-              </div>
-
-              <div className="dashboard-grid">
-
-                <button className="dashboard-card dashboard-card-featured dashboard-card-button" type="button" onClick={() => setActivePage('overview')}>
-
-                  <span className="dashboard-card-icon">✦</span><p className="section-kicker">OVERVIEW</p><h3>Event dashboard</h3>
-
-                  <p>Your central workspace for Champion Celebration operations.</p><span className="dashboard-card-note">Open dashboard →</span>
-
-                </button>
-
-                <button className="dashboard-card dashboard-card-button" type="button" onClick={() => setActivePage('registration')}>
-
-                  <span className="dashboard-card-icon">♙</span><p className="section-kicker">ATTENDEES</p><h3>Registration</h3>
-
-                  <p>Search attendees and review registration status.</p><span className="dashboard-card-note">Open registration →</span>
-
-                </button>
-
-                <button className="dashboard-card dashboard-card-button" type="button" onClick={() => { setActivePage('wristbands'); void loadWristbands() }}>
-
-                  <span className="dashboard-card-icon">◇</span><p className="section-kicker">WRISTBANDS</p><h3>Band management</h3>
-
-                  <p>Generate and print unique QR wristbands for registered attendees.</p><span className="dashboard-card-note">Manage QR bands →</span>
-
-                </button>
-
-                <button className="dashboard-card dashboard-card-button" type="button" onClick={() => { setActivePage('checkin'); setCheckinError(''); setCheckinMessage('') }}>
-
-                  <span className="dashboard-card-icon">▦</span><p className="section-kicker">EVENT ENTRY</p><h3>Check-in</h3>
-
-                  <p>Scan a QR code or enter an employee ID to record arrival.</p><span className="dashboard-card-note">Open check-in →</span>
-
-                </button>
-
-                <article className="dashboard-card">
-
-                  <span className="dashboard-card-icon">▤</span><p className="section-kicker">INSIGHTS</p><h3>Reports</h3>
-
-                  <p>View attendance totals, registration progress and activity logs.</p><span className="dashboard-card-note">Coming next</span>
-
-                </article>
-
-              </div>
-
-              <div className="dashboard-notice"><span>ⓘ</span><p><strong>Development preview</strong><br />Registration records are loaded from the connected development database. No real employee data should be used without approval.</p></div>
-
             </>
-
-          )}
-
-          {activePage === 'overview' && (
-
-            <>
-
-              <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>← Back to workspace</button>
-
-              <div className="dashboard-welcome">
-
-                <div>
-
-                  <p className="section-kicker">CHAMPION CELEBRATION</p><h1>Event<br /><span>overview.</span></h1>
-
-                  <p className="login-description">Your event summary will appear here as registration, wristband assignment and check-in features are connected.</p>
-
-                </div>
-
-                <div className="dashboard-user">
-
-                  <span className="user-avatar">{signedInStaff.staffId.slice(0, 2).toUpperCase()}</span>
-
-                  <div><strong>{signedInStaff.staffId}</strong><p>{signedInStaff.role.toUpperCase()}</p></div>
-
-                </div>
-
-              </div>
-
-              <div className="dashboard-section-heading">
-
-                <div><p className="section-kicker">EVENT AT A GLANCE</p><h2>Event summary</h2></div>
-
-                <span className="dashboard-status"><span className="status-dot" />Preview</span>
-
-              </div>
-
-              <div className="dashboard-grid overview-grid">
-
-                <article className="dashboard-card"><span className="dashboard-card-icon">♙</span><p className="section-kicker">ATTENDEES</p><h3>Registration</h3><p>Saved attendee records: {attendees.length}</p><span className="dashboard-card-note">Database records</span></article>
-
-                <article className="dashboard-card"><span className="dashboard-card-icon">◇</span><p className="section-kicker">WRISTBANDS</p><h3>Band inventory</h3><p>Wristband inventory is not connected yet.</p><span className="dashboard-card-note">Not connected</span></article>
-
-                <button className="dashboard-card dashboard-card-button" type="button" onClick={() => setActivePage('checkin')}><span className="dashboard-card-icon">▦</span><p className="section-kicker">EVENT ENTRY</p><h3>Check-in</h3><p>Scan an attendee QR wristband or enter their employee ID.</p><span className="dashboard-card-note">Open check-in →</span></button>
-
-                <article className="dashboard-card"><span className="dashboard-card-icon">▤</span><p className="section-kicker">INSIGHTS</p><h3>Reports</h3><p>Attendance reports are not available yet.</p><span className="dashboard-card-note">Not connected</span></article>
-
-              </div>
-
-            </>
-
           )}
 
           {activePage === 'registration' && (
 
             <>
 
-              <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>← Back to workspace</button>
+              <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>â† Back to workspace</button>
 
               <div className="dashboard-welcome">
 
@@ -1086,7 +1017,7 @@ function App() {
 
               </div>
 
-              <div className="dashboard-notice"><span>ⓘ</span><p><strong>Development database</strong><br />Attendee records are saved in the connected database. Use fictional test records until hosting and privacy approvals are complete.</p></div>
+              <div className="dashboard-notice"><span>â“˜</span><p><strong>Development database</strong><br />Attendee records are saved in the connected database. Use fictional test records until hosting and privacy approvals are complete.</p></div>
 
               {attendeeMessage && <p className="attendee-form-message" role="status">{attendeeMessage}</p>}
 
@@ -1120,7 +1051,7 @@ function App() {
 
                 >
 
-                  {showAttendeeForm ? '− Close form' : '+ Add attendee'}
+                  {showAttendeeForm ? 'âˆ’ Close form' : '+ Add attendee'}
 
                 </button>
 
@@ -1296,7 +1227,7 @@ function App() {
 
                   <div className="registration-empty">
 
-                    <span>⌕</span><h3>No attendees found</h3><p>Try a different search term or select another status.</p>
+                    <span>âŒ•</span><h3>No attendees found</h3><p>Try a different search term or select another status.</p>
 
                     <button type="button" className="registration-reset" onClick={() => { setSearchTerm(''); setRegistrationFilter('All') }}>Clear search and filters</button>
 
@@ -1314,7 +1245,7 @@ function App() {
 
             <div className="cc-feature-page">
 
-              <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>← Back to workspace</button>
+              <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>â† Back to workspace</button>
 
               <div className="dashboard-welcome"><div><p className="section-kicker">QR WRISTBANDS</p><h1>Band<br/><span>management.</span></h1><p className="login-description">Assign a unique QR token to an attendee and print a simple wristband label.</p></div></div>
 
@@ -1324,7 +1255,7 @@ function App() {
 
               <div className="registration-toolbar"><div className="registration-search"><label htmlFor="band-search">Find attendee</label><input id="band-search" type="search" placeholder="Search by name or EID" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} /></div><button className="add-attendee-button" type="button" onClick={() => void loadWristbands()} disabled={isLoadingWristbands}>{isLoadingWristbands ? 'Loading...' : 'Refresh QR bands'}</button></div>
 
-              <div className="cc-qr-grid">{attendees.filter(a => a.status === 'Registered' && (a.name.toLowerCase().includes(searchTerm.toLowerCase()) || a.eid.toLowerCase().includes(searchTerm.toLowerCase()))).map(a => { const band = wristbands.find(b => b.eid === a.eid); return <article className="cc-qr-card" key={a.eid}><h3>{a.name}</h3><p>{a.eid} · {a.department}</p>{band && wristbandImages[a.eid] ? <img className="cc-qr-image" src={wristbandImages[a.eid]} alt={`QR wristband for ${a.eid}`} /> : <div className="cc-qr-placeholder">QR not assigned</div>}<div className="cc-qr-actions"><button className="attendee-save-button" type="button" onClick={() => void assignWristband(a.eid)}>{band ? 'Refresh QR' : 'Generate QR'}</button><button className="attendee-cancel-button" type="button" disabled={!band || !wristbandImages[a.eid]} onClick={() => printWristband(a.eid)}>Print</button></div></article> })}</div>
+              <div className="cc-qr-grid">{attendees.filter(a => a.status === 'Registered' && (a.name.toLowerCase().includes(searchTerm.toLowerCase()) || a.eid.toLowerCase().includes(searchTerm.toLowerCase()))).map(a => { const band = wristbands.find(b => b.eid === a.eid); return <article className="cc-qr-card" key={a.eid}><h3>{a.name}</h3><p>{a.eid} Â· {a.department}</p>{band && wristbandImages[a.eid] ? <img className="cc-qr-image" src={wristbandImages[a.eid]} alt={`QR wristband for ${a.eid}`} /> : <div className="cc-qr-placeholder">QR not assigned</div>}<div className="cc-qr-actions"><button className="attendee-save-button" type="button" onClick={() => void assignWristband(a.eid)}>{band ? 'Refresh QR' : 'Generate QR'}</button><button className="attendee-cancel-button" type="button" disabled={!band || !wristbandImages[a.eid]} onClick={() => printWristband(a.eid)}>Print</button></div></article> })}</div>
 
               {attendees.filter(a => a.status === 'Registered').length === 0 && <p>No registered attendees yet. Add a test attendee first.</p>}
 
@@ -1336,7 +1267,7 @@ function App() {
 
             <div className="cc-feature-page">
 
-              <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>← Back to workspace</button>
+              <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>â† Back to workspace</button>
 
               <div className="dashboard-welcome"><div><p className="section-kicker">EVENT ENTRY</p><h1>Attendee<br/><span>check-in.</span></h1><p className="login-description">Scan the attendee's QR wristband or enter their employee ID manually.</p></div></div>
 
@@ -1348,7 +1279,7 @@ function App() {
 
                 <section className="cc-checkin-success" role="status" aria-live="polite">
 
-                  <h2>✓ Attendee checked in</h2>
+                  <h2>âœ“ Attendee checked in</h2>
 
                   <p><strong>Name:</strong> {checkedInAttendee.name}</p>
 
@@ -1370,7 +1301,7 @@ function App() {
 
                   <div className="cc-scanner-controls">
 
-                    <button className="add-attendee-button" type="button" disabled={scannerRunning} onClick={() => void startQrScanner()}>{scannerRunning ? 'Scanner running…' : 'Start camera scanner'}</button>
+                    <button className="add-attendee-button" type="button" disabled={scannerRunning} onClick={() => void startQrScanner()}>{scannerRunning ? 'Scanner runningâ€¦' : 'Start camera scanner'}</button>
 
                     <button className="attendee-cancel-button" type="button" disabled={!scannerRunning} onClick={() => void stopQrScanner()}>Stop scanner</button>
 
@@ -1380,11 +1311,11 @@ function App() {
 
                   <form className="cc-manual-checkin" onSubmit={e => { e.preventDefault(); void submitCheckin(checkinInput, 'EID') }}>
 
-                    <label htmlFor="cc-checkin-eid">Manual check-in · Employee ID</label>
+                    <label htmlFor="cc-checkin-eid">Manual check-in Â· Employee ID</label>
 
                     <input id="cc-checkin-eid" value={checkinInput} onChange={e => setCheckinInput(e.target.value)} placeholder="e.g. DEMO006" required/>
 
-                    <button className="attendee-save-button" type="submit" disabled={isCheckingIn}>{isCheckingIn ? 'Checking in…' : 'Record check-in'}</button>
+                    <button className="attendee-save-button" type="submit" disabled={isCheckingIn}>{isCheckingIn ? 'Checking inâ€¦' : 'Record check-in'}</button>
 
                   </form>
 
@@ -1396,7 +1327,7 @@ function App() {
 
           )}
 
-          <button className="dashboard-signout" type="button" onClick={handleSignOut}>Sign out <span>→</span></button>
+          <button className="dashboard-signout" type="button" onClick={handleSignOut}>Sign out <span>â†’</span></button>
 
         </section>
 
@@ -1404,7 +1335,7 @@ function App() {
 
           <span>CHAMPION CELEBRATION</span>
 
-          <span>MADE FOR CHAMPIONS <span className="gold-star">✦</span></span>
+          <span>MADE FOR CHAMPIONS <span className="gold-star">âœ¦</span></span>
 
         </footer>
 
@@ -1436,7 +1367,7 @@ function App() {
 
           <p className="login-description">Your event. Your team. One unforgettable celebration. Sign in to access the Champion Celebration staff portal.</p>
 
-          <div className="login-promise"><span className="promise-icon">✦</span><div><strong>One team. One celebration.</strong><p>Event operations, made simple.</p></div></div>
+          <div className="login-promise"><span className="promise-icon">âœ¦</span><div><strong>One team. One celebration.</strong><p>Event operations, made simple.</p></div></div>
 
         </div>
 
@@ -1464,19 +1395,19 @@ function App() {
 
             </div>
 
-            <button className="explore-button login-button" type="submit" disabled={isLoading}>{isLoading ? 'Signing in...' : 'Sign in'}{!isLoading && <span>→</span>}</button>
+            <button className="explore-button login-button" type="submit" disabled={isLoading}>{isLoading ? 'Signing in...' : 'Sign in'}{!isLoading && <span>â†’</span>}</button>
 
           </form>
 
           {message && <p className="login-message" role="alert" aria-live="polite">{message}</p>}
 
-          <div className="security-note"><span>◇</span><span>Authorised event staff only</span></div>
+          <div className="security-note"><span>â—‡</span><span>Authorised event staff only</span></div>
 
         </div>
 
       </section>
 
-      <footer className="site-footer"><span>CHAMPION CELEBRATION</span><span>MADE FOR CHAMPIONS <span className="gold-star">✦</span></span></footer>
+      <footer className="site-footer"><span>CHAMPION CELEBRATION</span><span>MADE FOR CHAMPIONS <span className="gold-star">âœ¦</span></span></footer>
 
     </main>
 
