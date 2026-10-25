@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+﻿import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 
 import QRCode from 'qrcode'
+import * as XLSX from 'xlsx'
 
 import { Html5Qrcode } from 'html5-qrcode'
 
@@ -35,16 +36,73 @@ type Attendee = {
   email: string
 
   department: string
-
+  contact_number?: string | null
+  family_emergency_contact_number?: string | null
+  colleague_emergency_contact_number?: string | null
+  project?: string | null
+  project_lead?: string | null
   status: 'Registered' | 'Pending' | 'Cancelled'
 
 }
 
 type RegistrationFilter = 'All' | Attendee['status']
+type MyPmoEmployee = {
+  enterprise_id: string
+  full_name: string
+  email: string
+  contact_number: string | null
+  project: string | null
+  project_lead: string | null
+}
 
 type Wristband = { eid: string; name: string; email: string; department: string; status: Attendee['status']; qr_token: string; band_status: string; checked_in_at?: string | null }
 
 type CheckinResult = { ok?: boolean; error?: string; attendee?: { eid: string; name: string; email: string; department: string; status: Attendee['status']; checked_in_at: string } }
+
+type OperationsAssignment = {
+  action?: string | null
+  attendee_name?: string | null
+  eid?: string | null
+  serial?: string | null
+  staff_id?: string | null
+  performed_at?: string | null
+}
+
+type OperationsCheckin = {
+  attendee_name?: string | null
+  eid?: string | null
+  serial?: string | null
+  method?: string | null
+  staff_id?: string | null
+  checked_in_at?: string | null
+}
+
+type OperationsAwaitingCheckin = {
+  attendee_name?: string | null
+  eid?: string | null
+  serial?: string | null
+  assigned_at?: string | null
+}
+
+type OperationsDashboard = {
+  generatedAt?: string | null
+  counts: {
+    preEventRegistrations?: number
+    liveRegistrations?: number
+    registeredAttendees?: number
+    totalCheckins?: number
+    availableBands?: number
+    assignedBands?: number
+    checkedInBands?: number
+    revokedBands?: number
+    attendeesWithoutBands?: number
+    pendingAttendees?: number
+  }
+  assignments?: OperationsAssignment[]
+  checkins?: OperationsCheckin[]
+  awaitingCheckin?: OperationsAwaitingCheckin[]
+  error?: string
+}
 
 const initialDemoAttendees: Attendee[] = []
 
@@ -63,6 +121,255 @@ function App() {
   const [signedInStaff, setSignedInStaff] = useState<Staff | null>(null)
 
   const [activePage, setActivePage] = useState('home')
+  const [operationsDashboard, setOperationsDashboard] = useState<OperationsDashboard | null>(null)
+  const [operationsDashboardError, setOperationsDashboardError] = useState('')
+  const [operationsDashboardBusy, setOperationsDashboardBusy] = useState(false)
+  const [operationsDashboardSearch, setOperationsDashboardSearch] = useState('')
+
+  const loadOperationsDashboard = useCallback(async () => {
+    if (signedInStaff?.role !== 'admin') return
+    setOperationsDashboardBusy(true)
+    try {
+      const response = await fetch('/api/admin/operations-dashboard', { credentials: 'same-origin' })
+      const data = await response.json() as OperationsDashboard & { error?: string }
+      if (!response.ok) throw new Error(data.error || 'Could not load operations dashboard')
+      setOperationsDashboard(data)
+      setOperationsDashboardError('')
+    } catch (error) {
+      setOperationsDashboardError(error instanceof Error ? error.message : 'Could not load operations dashboard')
+    } finally {
+      setOperationsDashboardBusy(false)
+    }
+  }, [signedInStaff?.role])
+
+  // Refresh the admin operations dashboard while it is visible.
+  useEffect(() => {
+    if (signedInStaff?.role !== 'admin' || activePage !== 'operations') return
+    // Defer the initial refresh until after the effect completes.
+    const initialRefresh = window.setTimeout(() => {
+      void loadOperationsDashboard()
+    }, 0)
+    const timer = window.setInterval(() => {
+      void loadOperationsDashboard()
+    }, 5000)
+    return () => {
+      window.clearTimeout(initialRefresh)
+      window.clearInterval(timer)
+    }
+  }, [signedInStaff?.role, activePage, loadOperationsDashboard])
+  const [mypmoFile, setMypmoFile] = useState<File | null>(null)
+  const [mypmoUploadBusy, setMypmoUploadBusy] = useState(false)
+  const [mypmoUploadMessage, setMypmoUploadMessage] = useState('')
+  const [mypmoUploadError, setMypmoUploadError] = useState('')
+  const [mypmoEid, setMypmoEid] = useState('')
+  const [mypmoLookupBusy, setMypmoLookupBusy] = useState(false)
+  const [mypmoLookupMessage, setMypmoLookupMessage] = useState('')
+  const [mypmoLookupError, setMypmoLookupError] = useState('')
+  const [mypmoEmployee, setMypmoEmployee] = useState<MyPmoEmployee | null>(null)
+  type EmployeeImportRow = {
+    eid: string
+    name: string
+    email: string
+    department: string
+    contact_number: string
+    family_emergency_contact_number: string
+    colleague_emergency_contact_number: string
+    project: string
+    project_lead: string
+    valid: boolean
+    issue: string
+  }
+  const [employeeImportRows, setEmployeeImportRows] = useState<EmployeeImportRow[]>([])
+  const [employeeImportError, setEmployeeImportError] = useState('')
+  const [employeeImportMessage, setEmployeeImportMessage] = useState('')
+  const [employeeImportConfirmed, setEmployeeImportConfirmed] = useState(false)
+  const [employeeImportBusy, setEmployeeImportBusy] = useState(false)
+
+  async function handleEmployeeImportSubmit() {
+    const validRows = employeeImportRows.filter((row) => row.valid)
+    if (!employeeImportConfirmed || validRows.length === 0 || employeeImportBusy) return
+
+    setEmployeeImportBusy(true)
+    setEmployeeImportError('')
+    setEmployeeImportMessage('Importing employee records...')
+
+    try {
+      const response = await fetch('/api/admin/employee-prereg/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          attendees: validRows.map((row) => ({
+            eid: row.eid,
+            name: row.name,
+            email: row.email,
+            department: row.department,
+            project: row.project,
+            contact_number: row.contact_number,
+            family_emergency_contact_number: row.family_emergency_contact_number,
+            colleague_emergency_contact_number: row.colleague_emergency_contact_number,
+            project_lead: row.project_lead,
+          })),
+        }),
+      })
+
+      const result = await response.json() as {
+        ok?: boolean
+        error?: string
+        inserted?: number
+        skipped?: number
+      }
+
+      if (!response.ok || !result.ok) {
+        throw new Error(result.error || 'Employee import failed.')
+      }
+
+      setEmployeeImportMessage(
+        `Import completed: ${result.inserted ?? 0} inserted, ${result.skipped ?? 0} skipped.`
+      )
+      setEmployeeImportConfirmed(false)
+      await loadAttendees()
+    } catch (error) {
+      setEmployeeImportError(
+        error instanceof Error ? error.message : 'Import failed. Please try again.'
+      )
+      setEmployeeImportMessage('')
+    } finally {
+      setEmployeeImportBusy(false)
+    }
+  }
+  function normalizeImportHeader(value: unknown): string {
+    return String(value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '')
+  }
+
+  function handleEmployeeImportFile(file: File) {
+    setEmployeeImportRows([])
+    setEmployeeImportError('')
+    setEmployeeImportMessage('')
+    setEmployeeImportConfirmed(false)
+
+    const extension = file.name.split('.').pop()?.toLowerCase()
+    if (!extension || !['xlsx', 'xls', 'csv'].includes(extension)) {
+      setEmployeeImportError('Choose an Excel (.xlsx or .xls) or CSV (.csv) file.')
+      return
+    }
+
+    void (async () => {
+      try {
+        const buffer = await file.arrayBuffer()
+        const workbook = XLSX.read(buffer, { type: 'array' })
+        const firstSheet = workbook.Sheets[workbook.SheetNames[0]]
+
+        if (!firstSheet) {
+          setEmployeeImportError('The selected file does not contain a worksheet.')
+          return
+        }
+
+        const records = XLSX.utils.sheet_to_json<Record<string, unknown>>(firstSheet, {
+          defval: '',
+          raw: false,
+        })
+
+        if (records.length === 0) {
+          setEmployeeImportError('No employee records were found in the first worksheet.')
+          return
+        }
+
+        const usedEids = new Set<string>()
+        const usedEmails = new Set<string>()
+
+        const mappedRows: EmployeeImportRow[] = records.map((record) => {
+          const headers = new Map<string, unknown>()
+          Object.entries(record).forEach(([key, value]) => {
+            headers.set(normalizeImportHeader(key), value)
+          })
+
+          const pick = (names: string[]): string => {
+            for (const name of names) {
+              const value = headers.get(name)
+              if (value !== undefined && String(value).trim() !== '') {
+                return String(value).trim()
+              }
+            }
+            return ''
+          }
+
+          const eid = pick(['eid', 'employeeid', 'enterpriseid', 'employeeidnumber'])
+          const name = pick(['name', 'fullname', 'employeename', 'respondentname'])
+          const email = pick(['email', 'emailaddress', 'workemail', 'officialemail'])
+          const project = pick(['project', 'projectname', 'department', 'businessunit'])
+          const contact = pick(['contactnumber', 'phonenumber', 'mobile', 'mobilenumber', 'phone'])
+          const familyEmergency = pick([
+            'familyemergencycontactnumber',
+            'familyemergencycontact',
+            'emergencycontactnumber',
+            'emergencycontact',
+          ])
+          const colleagueEmergency = pick([
+            'colleagueemergencycontactnumber',
+            'colleagueemergencycontact',
+          ])
+          const projectLead = pick(['projectlead', 'projectmanager', 'leadname'])
+
+          const issues: string[] = []
+          const normalizedEid = eid.toLowerCase()
+          const normalizedEmail = email.toLowerCase()
+
+          if (!eid) issues.push('Missing Employee ID')
+          if (!name) issues.push('Missing name')
+          if (!email) {
+            issues.push('Missing email')
+          } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+            issues.push('Invalid email')
+          }
+          if (!project) issues.push('Missing project/department')
+
+          if (eid && usedEids.has(normalizedEid)) issues.push('Duplicate Employee ID in file')
+          if (email && usedEmails.has(normalizedEmail)) issues.push('Duplicate email in file')
+
+          if (eid) usedEids.add(normalizedEid)
+          if (email) usedEmails.add(normalizedEmail)
+
+          return {
+            eid,
+            name,
+            email,
+            department: project,
+            contact_number: contact,
+            family_emergency_contact_number: familyEmergency,
+            colleague_emergency_contact_number: colleagueEmergency,
+            project,
+            project_lead: projectLead,
+            valid: issues.length === 0,
+            issue: issues.join('; '),
+          }
+        })
+
+        setEmployeeImportRows(mappedRows)
+        setEmployeeImportMessage(
+          'Preview ready: ' + mappedRows.length + ' row(s), ' +
+          mappedRows.filter((row) => row.valid).length + ' valid and ' +
+          mappedRows.filter((row) => !row.valid).length + ' needing correction.'
+        )
+      } catch (error) {
+        console.error('Employee import preview failed:', error)
+        setEmployeeImportError('Unable to read this file. Check that it is a valid Excel or CSV file.')
+      }
+    })()
+  }
+  const [inventoryCount, setInventoryCount] = useState('1500')
+  const [inventoryStart, setInventoryStart] = useState('1')
+  const [inventoryPrefix, setInventoryPrefix] = useState('ACC')
+  const [inventorySerial, setInventorySerial] = useState('')
+  const [inventoryEid, setInventoryEid] = useState('')
+  const [inventoryPrintStart, setInventoryPrintStart] = useState('1')
+  const [inventoryPrintCount, setInventoryPrintCount] = useState('50')
+  const [inventoryMessage, setInventoryMessage] = useState('')
+  const [inventoryError, setInventoryError] = useState('')
+  const [inventoryCounts, setInventoryCounts] = useState({available:0,assigned:0,checkedIn:0,revoked:0,total:0})
+  const [inventoryBands, setInventoryBands] = useState<Array<{serial:string;status:string;attendee_eid:string|null;name:string|null}>>([])
+  const [inventorySearch, setInventorySearch] = useState('')
+  const [inventoryBusy, setInventoryBusy] = useState(false)
 
   const [attendees, setAttendees] = useState<Attendee[]>(initialDemoAttendees)
 
@@ -85,6 +392,10 @@ function App() {
   const [editEmail, setEditEmail] = useState('')
 
   const [editDepartment, setEditDepartment] = useState('')
+  const [editContactNumber, setEditContactNumber] = useState('')
+  const [editFamilyEmergency, setEditFamilyEmergency] = useState('')
+  const [editColleagueEmergency, setEditColleagueEmergency] = useState('')
+  const [editPeopleLead, setEditPeopleLead] = useState('')
 
   const [editStatus, setEditStatus] = useState<Attendee['status']>('Registered')
 
@@ -98,9 +409,13 @@ function App() {
 
   const [newEmail, setNewEmail] = useState('')
 
-  const [newDepartment, setNewDepartment] = useState('')
-
-  const [newStatus, setNewStatus] = useState<Attendee['status']>('Registered')
+  const [newProject, setNewProject] = useState('')
+  const [newContactNumber, setNewContactNumber] = useState('')
+  const [newEmergencyContact, setNewEmergencyContact] = useState('')
+  const [newColleagueContact, setNewColleagueContact] = useState('')
+  const [newPeopleLead, setNewPeopleLead] = useState('')
+  const [attendeeLookupMessage, setAttendeeLookupMessage] = useState('')
+  const [attendeeLookupBusy, setAttendeeLookupBusy] = useState(false)
 
   const [wristbands, setWristbands] = useState<Wristband[]>([])
 
@@ -188,14 +503,53 @@ function App() {
 
     setNewEmail('')
 
-    setNewDepartment('')
-
-    setNewStatus('Registered')
+    setNewProject('')
+    setNewContactNumber('')
+    setNewEmergencyContact('')
+    setNewColleagueContact('')
+    setNewPeopleLead('')
 
     setAttendeeFormError('')
 
   }
 
+  async function handleAttendeeEidLookup(value: string) {
+    const eid = value.trim()
+    setAttendeeLookupMessage('')
+
+    if (!eid) return
+
+    setAttendeeLookupBusy(true)
+    try {
+      const response = await fetch(
+        `/api/mypmo/lookup?eid=${encodeURIComponent(eid)}`,
+        { credentials: 'same-origin', headers: { Accept: 'application/json' } },
+      )
+      const result = await response.json() as {
+        found?: boolean
+        employee?: MyPmoEmployee
+        message?: string
+        error?: string
+      }
+
+      if (!response.ok || !result.found || !result.employee) {
+        setAttendeeLookupMessage(result.message || 'Enterprise ID not found in MyPMO. Enter the details manually.')
+        return
+      }
+
+      setNewEid(result.employee.enterprise_id)
+      setNewName(result.employee.full_name)
+      setNewEmail(result.employee.email)
+      setNewProject(result.employee.project || '')
+      setNewContactNumber(result.employee.contact_number || '')
+      setNewPeopleLead(result.employee.project_lead || '')
+      setAttendeeLookupMessage('Employee details filled from MyPMO. Please verify before saving.')
+    } catch {
+      setAttendeeLookupMessage('Could not reach MyPMO. You can enter the details manually.')
+    } finally {
+      setAttendeeLookupBusy(false)
+    }
+  }
   async function handleAddAttendee(event: FormEvent<HTMLFormElement>) {
 
     event.preventDefault()
@@ -212,9 +566,13 @@ function App() {
 
     const email = newEmail.trim().toLowerCase()
 
-    const department = newDepartment.trim()
+    const project = newProject.trim()
+    const contactNumber = newContactNumber.trim()
+    const emergencyContact = newEmergencyContact.trim()
+    const colleagueContact = newColleagueContact.trim()
+    const peopleLead = newPeopleLead.trim()
 
-    if (!eid || !name || !email || !department) {
+    if (!eid || !name || !email || !project || !contactNumber || !emergencyContact || !colleagueContact || !peopleLead) {
 
       setAttendeeFormError('Please complete all fields.')
 
@@ -260,7 +618,7 @@ function App() {
 
         credentials: 'same-origin',
 
-        body: JSON.stringify({ eid, name, email, department, status: newStatus }),
+        body: JSON.stringify({ eid, name, email, department: project, project, contact_number: contactNumber, family_emergency_contact_number: emergencyContact, colleague_emergency_contact_number: colleagueContact, project_lead: peopleLead, status: 'Registered' }),
 
       })
 
@@ -329,6 +687,10 @@ function App() {
     setEditEmail(attendee.email)
 
     setEditDepartment(attendee.department)
+    setEditContactNumber(attendee.contact_number ?? '')
+    setEditFamilyEmergency(attendee.family_emergency_contact_number ?? '')
+    setEditColleagueEmergency(attendee.colleague_emergency_contact_number ?? '')
+    setEditPeopleLead(attendee.project_lead ?? '')
 
     setEditStatus(attendee.status)
 
@@ -349,6 +711,10 @@ function App() {
     setEditEmail('')
 
     setEditDepartment('')
+    setEditContactNumber('')
+    setEditFamilyEmergency('')
+    setEditColleagueEmergency('')
+    setEditPeopleLead('')
 
     setEditStatus('Registered')
 
@@ -425,6 +791,11 @@ function App() {
           email,
 
           department,
+          project: department,
+          contact_number: editContactNumber.trim(),
+          family_emergency_contact_number: editFamilyEmergency.trim(),
+          colleague_emergency_contact_number: editColleagueEmergency.trim(),
+          project_lead: editPeopleLead.trim(),
 
           status: editStatus,
 
@@ -591,14 +962,14 @@ function App() {
   }, [])
 
   useEffect(() => {
+  if (!signedInStaff) return
 
-    if (signedInStaff) {
+  const timeoutId = window.setTimeout(() => {
+    void loadAttendees()
+  }, 0)
 
-      void loadAttendees()
-
-    }
-
-  }, [signedInStaff])
+  return () => window.clearTimeout(timeoutId)
+}, [signedInStaff])
 
   async function handleSignOut() {
     setMessage('')
@@ -680,7 +1051,7 @@ function App() {
 
         }
 
-        const svg = `<svg xmlns="http://www\.w3.org/2000/svg" viewBox="0 0 ${fullSize} ${fullSize}" shape-rendering="crispEdges"><rect width="100%" height="100%" fill="#fff"/><path d="${path}" fill="#000"/></svg>`
+        const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${fullSize} ${fullSize}" shape-rendering="crispEdges"><rect width="100%" height="100%" fill="#fff"/><path d="${path}" fill="#000"/></svg>`
 
         images[band.eid] = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
 
@@ -732,7 +1103,7 @@ function App() {
 
     try {
 
-      const response = await fetch('/api/checkin', {
+      const response = await fetch(method === 'QR' ? '/api/inventory/checkin' : '/api/checkin', {
 
         method: 'POST',
 
@@ -740,7 +1111,7 @@ function App() {
 
         headers: { 'Content-Type': 'application/json' },
 
-        body: JSON.stringify(method === 'QR' ? { token: clean } : { eid: clean }),
+        body: JSON.stringify(method === 'QR' ? { serial: clean } : { eid: clean }),
 
       })
 
@@ -898,6 +1269,147 @@ function App() {
 
   const cancelledCount = attendees.filter((attendee) => attendee.status === 'Cancelled').length
 
+  async function handleMyPmoUpload() {
+    setMypmoUploadMessage('')
+    setMypmoUploadError('')
+    if (!mypmoFile) {
+      setMypmoUploadError('Choose an Excel workbook first.')
+      return
+    }
+    if (!/\.(xlsx|xls)$/i.test(mypmoFile.name)) {
+      setMypmoUploadError('Choose an .xlsx or .xls workbook.')
+      return
+    }
+
+    setMypmoUploadBusy(true)
+    try {
+      const form = new FormData()
+      form.append('file', mypmoFile)
+      const response = await fetch('/api/mypmo/upload', {
+        method: 'POST',
+        credentials: 'same-origin',
+        body: form,
+      })
+      const result = await response.json() as {
+        ok?: boolean
+        imported?: number
+        message?: string
+        error?: string
+      }
+      if (!response.ok || !result.ok) {
+        throw new Error(result.error || result.message || 'Upload failed.')
+      }
+      setMypmoUploadMessage(
+        result.message || `Imported ${result.imported ?? 0} employees successfully.`,
+      )
+      setMypmoFile(null)
+      const input = document.getElementById('mypmo-file') as HTMLInputElement | null
+      if (input) input.value = ''
+    } catch (error) {
+      setMypmoUploadError(error instanceof Error ? error.message : 'Upload failed.')
+    } finally {
+      setMypmoUploadBusy(false)
+    }
+  }
+
+  async function handleMyPmoLookup() {
+    const eid = mypmoEid.trim()
+    setMypmoLookupMessage('')
+    setMypmoLookupError('')
+    setMypmoEmployee(null)
+    if (!eid) {
+      setMypmoLookupError('Enter an Enterprise ID.')
+      return
+    }
+
+    setMypmoLookupBusy(true)
+    try {
+      const response = await fetch(
+        `/api/mypmo/lookup?eid=${encodeURIComponent(eid)}`,
+        { credentials: 'same-origin', headers: { Accept: 'application/json' } },
+      )
+      const result = await response.json() as {
+        found?: boolean
+        employee?: MyPmoEmployee
+        message?: string
+        error?: string
+      }
+      if (!response.ok || !result.found || !result.employee) {
+        throw new Error(result.message || result.error || 'Enterprise ID not found in MyPMO.')
+      }
+      setMypmoEmployee(result.employee)
+      setMypmoLookupMessage('Employee found.')
+    } catch (error) {
+      setMypmoLookupError(error instanceof Error ? error.message : 'Lookup failed.')
+    } finally {
+      setMypmoLookupBusy(false)
+    }
+  }
+  async function loadInventory() {
+    setInventoryError(''); setInventoryMessage(''); setInventoryBusy(true)
+    try { const r=await fetch('/api/inventory',{credentials:'same-origin'}); const d=await r.json(); if(!r.ok) throw new Error(d.error||'Could not load inventory'); setInventoryCounts(d.counts); setInventoryBands(d.bands||[]) } catch(e) { setInventoryError(e instanceof Error?e.message:'Could not load inventory') } finally { setInventoryBusy(false) }
+  }
+  async function inventoryAction(path:string, payload:Record<string,unknown>) {
+    setInventoryError(''); setInventoryMessage(''); setInventoryBusy(true)
+    try { const r=await fetch(path,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); const d=await r.json(); if(!r.ok) throw new Error(d.error||'Request failed'); setInventoryMessage(path.endsWith('/generate')?`Generated ${d.generated} bands (${d.prefix}${String(d.start).padStart(3,'0')}ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“${d.prefix}${String(d.end).padStart(3,'0')}).`:path.endsWith('/assign')?`${d.serial} assigned to ${d.attendee.name}.`:`${d.serial} checked in: ${d.attendee.name}.`); await loadInventory() } catch(e) { setInventoryError(e instanceof Error?e.message:'Request failed') } finally { setInventoryBusy(false) }
+  }
+
+  async function printInventoryLabels() {
+    setInventoryError('')
+    setInventoryMessage('')
+    const start = Number(inventoryPrintStart)
+    const count = Number(inventoryPrintCount)
+    if (!Number.isInteger(start) || start < 1 || !Number.isInteger(count) || count < 1 || count > 1700 || start + count - 1 > 999999) {
+      setInventoryError('Enter a first number of at least 1 and a label count between 1 and 1700.')
+      return
+    }
+    let printableBands: typeof inventoryBands
+    try {
+      const response = await fetch('/api/inventory?forPrint=1', { credentials: 'same-origin' })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'Could not load bands for printing')
+      printableBands = data.bands || []
+    } catch (error) {
+      setInventoryError(error instanceof Error ? error.message : 'Could not load bands for printing')
+      return
+    }
+    const serials = new Set(Array.from({ length: count }, (_, index) => `${inventoryPrefix}${String(start + index).padStart(3, '0')}`))
+    const bands = printableBands.filter((band) => serials.has(band.serial) && band.status === 'Available')
+    if (!bands.length) {
+      setInventoryError('No available wristbands found in this serial range. Refresh inventory or choose another range.')
+      return
+    }
+    const labels = bands.map((band) => {
+      const qr = QRCode.create(band.serial, { errorCorrectionLevel: 'M' })
+      const size = qr.modules.size
+      const quietZone = 4
+      const fullSize = size + quietZone * 2
+      let path = ''
+      for (let row = 0; row < size; row += 1) {
+        for (let col = 0; col < size; col += 1) {
+          if (qr.modules.data[row * size + col]) path += `M${col + quietZone},${row + quietZone}h1v1h-1z`
+        }
+      }
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${fullSize} ${fullSize}" shape-rendering="crispEdges"><rect width="100%" height="100%" fill="#fff"/><path d="${path}" fill="#000"/></svg>`
+      return `<article class="label"><img alt="QR code ${band.serial}" src="data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}"><div class="serial">${band.serial}</div><div class="caption">Champion Celebration</div></article>`
+    }).join('')
+    const win = window.open('', '_blank', 'width=900,height=700')
+    if (!win) {
+      setInventoryError('Allow pop-ups for this site, then click Print QR labels again.')
+      return
+    }
+    win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Inventory QR Labels</title><style>
+      *{box-sizing:border-box}body{font-family:Arial,sans-serif;margin:0;color:#111}
+      .toolbar{padding:12px 18px;background:#f2f5fa;border-bottom:1px solid #d8deea;display:flex;gap:12px;align-items:center}
+      .toolbar button{padding:10px 18px;font-size:14px;cursor:pointer}.sheet{padding:10mm;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:5mm}
+      .label{border:1px dashed #aaa;min-height:48mm;padding:4mm 2mm;display:flex;flex-direction:column;align-items:center;justify-content:center;break-inside:avoid;text-align:center}
+      .label img{width:28mm;height:28mm;object-fit:contain}.serial{font-size:16pt;font-weight:700;letter-spacing:.5px;margin-top:2mm}.caption{font-size:8pt;margin-top:1mm;color:#444}
+      @page{size:A4;margin:8mm}@media print{.toolbar{display:none}.sheet{padding:0;gap:3mm}.label{min-height:47mm}}
+      </style></head><body><div class="toolbar"><strong>${bands.length} available QR labels</strong><button onclick="window.print()">Print labels</button><button onclick="window.close()">Close</button></div><main class="sheet">${labels}</main></body></html>`)
+    win.document.close()
+    setInventoryMessage(`Prepared ${bands.length} QR label(s). The QR contains only its wristband serial; already assigned or checked-in bands were excluded.`)
+  }
+
   if (signedInStaff) {
 
     return (
@@ -914,7 +1426,10 @@ function App() {
 
           </div>
 
-          <span className="event-label">STAFF PORTAL</span>
+          <div className="topbar-actions">
+            <span className="event-label">STAFF PORTAL</span>
+            {signedInStaff && <button className="topbar-signout" type="button" onClick={handleSignOut}>Sign out <span aria-hidden="true">-&gt;</span></button>}
+          </div>
 
         </nav>
 
@@ -955,47 +1470,336 @@ function App() {
                     setCheckedInAttendee(null)
                   }}
                 >
-                  <span className="cc-primary-icon" aria-hidden="true">⌗</span>
+                  <span className="cc-primary-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="25" height="25" fill="currentColor"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h3v3h-3zM19 14h2v2h-2zM19 19h2v2h-2z"/></svg></span>
                   <span className="cc-primary-copy">
                     <strong>Scan QR / Check in</strong>
                     <span>Scan an attendee's wristband or enter their employee ID.</span>
                   </span>
-                  <span className="cc-primary-arrow" aria-hidden="true">→</span>
+                  <span className="cc-primary-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h15M13 5l7 7-7 7"/></svg></span>
                 </button>
 
                 <div className="cc-quick-actions" aria-label="Other event tasks">
-                  <button type="button" className="cc-quick-action" onClick={() => { setActivePage('registration'); void loadAttendees() }}>
-                    <span className="cc-quick-icon" aria-hidden="true">♙</span>
+                  {(signedInStaff.role === 'admin' || signedInStaff.role === 'registration') && (<button type="button" className="cc-quick-action" onClick={() => { setActivePage('registration'); void loadAttendees() }}>
+                    <span className="cc-quick-icon" aria-hidden="true">&#9776;</span>
                     <span><strong>Attendees</strong><small>Search and update registrations</small></span>
-                    <span className="cc-quick-arrow" aria-hidden="true">→</span>
+                    <span className="cc-quick-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h15M13 5l7 7-7 7"/></svg></span>
+                  </button>)}
+                  {/* QR wristband management is intentionally not a primary workflow in Option 2. */}
+                  {(signedInStaff.role === 'admin' || signedInStaff.role === 'registration') && (
+                    <button type="button" className="cc-quick-action" onClick={() => { setActivePage('mypmo'); setMypmoUploadMessage(''); setMypmoUploadError(''); setMypmoLookupMessage(''); setMypmoLookupError(''); setMypmoEmployee(null) }}>
+                      <span className="cc-quick-icon" aria-hidden="true">&#9776;</span>
+                      <span><strong>MyPMO</strong><small>Import employee data and look up an Enterprise ID</small></span>
+                      <span className="cc-quick-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h15M13 5l7 7-7 7"/></svg></span>
+                    </button>
+                  )}                  {(signedInStaff.role === 'admin' || signedInStaff.role === 'registration') && (<button type="button" className="cc-quick-action" onClick={() => { setActivePage('inventory'); void loadInventory() }}>
+                    <span className="cc-quick-icon" aria-hidden="true">&#9776;</span>
+                    <span><strong>Band Inventory</strong><small>Assign a preprinted band to an attendee</small></span>
+                    <span className="cc-quick-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h15M13 5l7 7-7 7"/></svg></span>
+                  </button>)}
+
+                {signedInStaff.role === 'admin' && (
+                  <button type="button" className="cc-quick-action" onClick={() => setActivePage('operations')}>
+                    <span className="cc-quick-icon" aria-hidden="true">&#9776;</span>
+                    <span><strong>Operations Dashboard</strong><small>Live event activity, wristbands and check-ins</small></span>
+                    <span className="cc-quick-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h15M13 5l7 7-7 7"/></svg></span>
                   </button>
-                  <button type="button" className="cc-quick-action" onClick={() => { setActivePage('wristbands'); setCheckinError(''); setCheckinMessage(''); void loadWristbands() }}>
-                    <span className="cc-quick-icon" aria-hidden="true">◇</span>
-                    <span><strong>QR wristbands</strong><small>Assign and print attendee QR codes</small></span>
-                    <span className="cc-quick-arrow" aria-hidden="true">→</span>
+                )}
+                {signedInStaff.role === 'admin' && (
+                  <button type="button" className="cc-quick-action" onClick={() => setActivePage('employee-prereg')}>
+                    <span className="cc-quick-icon" aria-hidden="true">&#128203;</span>
+                    <span><strong>Employee Pre-Registration</strong><small>Upload and validate Microsoft Forms responses</small></span>
+                    <span className="cc-quick-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h15M13 5l7 7-7 7"/></svg></span>
                   </button>
+                )}
                 </div>
 
-                <div className="cc-attendee-summary">
-                  <div><span>Saved attendees</span><strong>{attendees.length}</strong></div>
-                  <div><span>Registered</span><strong>{registeredCount}</strong></div>
-                  <div><span>Pending</span><strong>{pendingCount}</strong></div>
-                  <div><span>Cancelled</span><strong>{cancelledCount}</strong></div>
+                <div className="cc-attendee-summary cc-dashboard-summary">
+                  <div className="summary-saved"><span>Saved attendees</span><strong>{attendees.length}</strong></div>
+                  <div className="summary-registered"><span>Registered</span><strong>{registeredCount}</strong></div>
+                  <div className="summary-checkin"><span>Checked in</span><strong>0</strong></div>
                 </div>
               </section>
 
               <div className="dashboard-notice">
-                <span aria-hidden="true">ⓘ</span>
+                <span aria-hidden="true">i</span>
                 <p><strong>Before the event</strong><br />Confirm attendee records, assign QR wristbands, then use Scan QR / Check in at the entrance.</p>
               </div>
             </>
+          )}
+
+          {activePage === 'employee-prereg' && signedInStaff.role === 'admin' && (
+            <section className="cc-inventory-page">
+              <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>&#8592; Back to workspace</button>
+              <p className="section-kicker">EMPLOYEE REGISTRATION</p>
+              <h1>Employee Pre-Registration.</h1>
+              <p className="login-description">Upload employee responses exported from Microsoft Forms. Review and validate the records before importing them.</p>
+              <div className="cc-inventory-panel">
+                <h2>Upload Microsoft Forms responses</h2>
+                <p>Choose an Excel or CSV export and review validation results before importing.</p>
+                <label htmlFor="employee-import-file">Microsoft Forms export (.xlsx, .xls, .csv)</label>
+                <input
+                  id="employee-import-file"
+                  type="file"
+                  accept=".xlsx,.xls,.csv"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0]
+                    if (file) handleEmployeeImportFile(file)
+                  }}
+                />
+
+                {employeeImportError && <p className="attendee-form-error" role="alert">{employeeImportError}</p>}
+                {employeeImportMessage && <p role="status">{employeeImportMessage}</p>}
+
+                {employeeImportRows.length > 0 && (
+                  <>
+                    <p>
+                      <strong>{employeeImportRows.filter((row) => row.valid).length}</strong> valid rows;{' '}
+                      <strong>{employeeImportRows.filter((row) => !row.valid).length}</strong> need attention.
+                    </p>
+                    <div className="registration-table-wrap">
+                      <table className="registration-table">
+                        <thead>
+                          <tr>
+                            <th>Employee ID</th><th>Name</th><th>Email</th>
+                            <th>Project / Department</th><th>Contact</th>
+                            <th>Project Lead</th><th>Validation</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {employeeImportRows.map((row, index) => (
+                            <tr key={`${row.eid}-${index}`}>
+                              <td>{row.eid || '—'}</td>
+                              <td>{row.name || '—'}</td>
+                              <td>{row.email || '—'}</td>
+                              <td>{row.project || '—'}</td>
+                              <td>{row.contact_number || '—'}</td>
+                              <td>{row.project_lead || '—'}</td>
+                              <td>{row.valid ? 'Valid' : row.issue}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <p><strong>Review before importing.</strong> Only valid rows will be submitted. Existing employee IDs or emails will be skipped. No wristbands will be assigned and no check-ins will be performed.</p>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={employeeImportConfirmed}
+                        disabled={employeeImportBusy || employeeImportRows.every((row) => !row.valid)}
+                        onChange={(event) => setEmployeeImportConfirmed(event.target.checked)}
+                      />
+                      I confirm importing the valid employee rows shown above.
+                    </label>
+                    <button
+                      type="button"
+                      disabled={!employeeImportConfirmed || employeeImportBusy || employeeImportRows.every((row) => !row.valid)}
+                      onClick={() => void handleEmployeeImportSubmit()}
+                    >
+                      {employeeImportBusy ? 'Importing...' : 'Submit Import'}
+                    </button>
+                  </>
+                )}
+              </div>
+            </section>
+          )}
+          {activePage === 'mypmo' && (
+            <section className="cc-inventory-page">
+              <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>&#8592; Back to workspace</button>
+              <p className="section-kicker">EMPLOYEE DIRECTORY</p>
+              <h1>MyPMO.</h1>
+              <p className="login-description">Import the approved MyPMO workbook, then search by Enterprise ID.</p>
+
+              {signedInStaff?.role === 'admin' && (
+                <section className="cc-inventory-panel">
+                  <h2>Import Excel workbook</h2>
+                  <p>Accepted formats: .xlsx and .xls. Use approved data only.</p>
+                  <input id="mypmo-file" type="file" accept=".xlsx,.xls" onChange={(event) => { setMypmoFile(event.target.files?.[0] ?? null); setMypmoUploadMessage(''); setMypmoUploadError('') }} />
+                  <button className="cc-primary-action" type="button" disabled={!mypmoFile || mypmoUploadBusy} onClick={() => void handleMyPmoUpload()}>
+                    {mypmoUploadBusy ? 'Uploading...' : 'Upload MyPMO workbook'}
+                  </button>
+                  {mypmoUploadMessage && <p className="attendee-form-message" role="status">{mypmoUploadMessage}</p>}
+                  {mypmoUploadError && <p className="attendee-form-error" role="alert">{mypmoUploadError}</p>}
+                </section>
+              )}
+
+              <section className="cc-inventory-panel">
+                <h2>Enterprise ID lookup</h2>
+                <form onSubmit={(event) => { event.preventDefault(); void handleMyPmoLookup() }}>
+                  <div className="cc-inventory-fields">
+                    <label htmlFor="mypmo-eid">Enterprise ID
+                      <input id="mypmo-eid" value={mypmoEid} onChange={(event) => setMypmoEid(event.target.value)} maxLength={100} placeholder="Enter Enterprise ID" required />
+                    </label>
+                  </div>
+                  <button className="cc-primary-action" type="submit" disabled={mypmoLookupBusy}>
+                    {mypmoLookupBusy ? 'Searching...' : 'Find employee'}
+                  </button>
+                </form>
+                {mypmoLookupMessage && <p className="attendee-form-message" role="status">{mypmoLookupMessage}</p>}
+                {mypmoLookupError && <p className="attendee-form-error" role="alert">{mypmoLookupError}</p>}
+                {mypmoEmployee && (
+                  <div className="cc-inventory-fields">
+                    <p><strong>Enterprise ID:</strong> {mypmoEmployee.enterprise_id}</p>
+                    <p><strong>Full name:</strong> {mypmoEmployee.full_name}</p>
+                    <p><strong>Email:</strong> {mypmoEmployee.email}</p>
+                    <p><strong>Mobile:</strong> {mypmoEmployee.contact_number || 'Not provided'}</p>
+                    <p><strong>Project:</strong> {mypmoEmployee.project || 'Not provided'}</p>
+                    <p><strong>Reporting manager:</strong> {mypmoEmployee.project_lead || 'Not provided'}</p>
+                  </div>
+                )}
+              </section>
+            </section>
+          )}
+          {activePage === 'operations' && signedInStaff.role === 'admin' && (
+  <section className="cc-inventory-page">
+    <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>&#8592; Back to workspace</button>
+    <p className="section-kicker">ADMIN ONLY</p>
+    <h1>Operations dashboard.</h1>
+    <p className="login-description">Attendee, wristband assignment and check-in operations.</p>
+        {operationsDashboardError && <div className="cc-error">{operationsDashboardError}</div>}
+    <div style={{display:'flex',gap:'12px',alignItems:'center',flexWrap:'wrap',margin:'20px 0'}}>
+      <button className="cc-primary-action" type="button" onClick={() => void loadOperationsDashboard()} disabled={operationsDashboardBusy}>
+        {operationsDashboardBusy ? 'Refreshing...' : 'Refresh now'}
+      </button>
+      <span>Auto-refreshes every 5 seconds</span>
+      {operationsDashboard?.generatedAt && <span>Updated: {new Date(operationsDashboard.generatedAt).toLocaleString()}</span>}
+    </div>
+    {!operationsDashboard && !operationsDashboardError && <p>Loading live event data...</p>}
+    {operationsDashboard && (
+      <>
+        <div className="cc-attendee-summary cc-dashboard-summary">
+          <div className="summary-saved"><span>Pre-event registrations</span><strong>{operationsDashboard.counts.preEventRegistrations ?? 0}</strong></div>
+          <div className="summary-registered"><span>Live registrations</span><strong>{operationsDashboard.counts.liveRegistrations ?? 0}</strong></div>
+          <div className="summary-checkin"><span>Total registrations</span><strong>{operationsDashboard.counts.registeredAttendees ?? 0}</strong></div>
+          <div className="summary-saved"><span>Successful check-ins</span><strong>{operationsDashboard.counts.totalCheckins ?? 0}</strong></div>
+        </div>
+        <div className="cc-attendee-summary cc-dashboard-summary">
+          <div className="summary-saved"><span>Available bands</span><strong>{operationsDashboard.counts.availableBands ?? 0}</strong></div>
+          <div className="summary-registered"><span>Assigned bands</span><strong>{operationsDashboard.counts.assignedBands ?? 0}</strong></div>
+          <div className="summary-checkin"><span>Checked-in bands</span><strong>{operationsDashboard.counts.checkedInBands ?? 0}</strong></div>
+          <div className="summary-saved"><span>Revoked bands</span><strong>{operationsDashboard.counts.revokedBands ?? 0}</strong></div>
+        </div>
+        <div className="cc-inventory-panel" style={{marginTop:'20px'}}>
+          <h2>Attention required</h2>
+          <p>Registered attendees without an inventory band: <strong>{operationsDashboard.counts.attendeesWithoutBands ?? 0}</strong></p>
+          <p>Assigned bands awaiting check-in: <strong>{(operationsDashboard.awaitingCheckin || []).length}</strong></p>
+          <p>Pending registrations: <strong>{operationsDashboard.counts.pendingAttendees ?? 0}</strong></p>
+        </div>
+        <div className="cc-inventory-panel" style={{marginTop:'20px'}}>
+          <h2>Search activity</h2>
+          <input aria-label="Search dashboard activity" placeholder="Search attendee, EID, band serial or staff ID" value={operationsDashboardSearch} onChange={e => setOperationsDashboardSearch(e.target.value)} />
+        </div>
+        <div className="cc-inventory-panel" style={{marginTop:'20px',overflowX:'auto'}}>
+          <h2>Band assignment and inventory audit</h2>
+          <table style={{width:'100%',borderCollapse:'collapse',textAlign:'left'}}>
+            <thead><tr><th>Action</th><th>Attendee</th><th>EID</th><th>Band serial</th><th>Staff ID</th><th>Timestamp</th></tr></thead>
+            <tbody>
+              {(operationsDashboard.assignments || []).filter((item: OperationsAssignment) => [item.action,item.attendee_name,item.eid,item.serial,item.staff_id,item.performed_at].some(value => String(value ?? '').toLowerCase().includes(operationsDashboardSearch.toLowerCase()))).map((item: OperationsAssignment,index:number) => (
+                <tr key={`${item.serial}-${item.performed_at}-${index}`}>
+                  <td>{item.action}</td><td>{item.attendee_name || '—'}</td><td>{item.eid || '—'}</td><td>{item.serial}</td><td>{item.staff_id || '—'}</td><td>{item.performed_at ? new Date(item.performed_at).toLocaleString() : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="cc-inventory-panel" style={{marginTop:'20px',overflowX:'auto'}}>
+          <h2>Successful check-ins</h2>
+          <table style={{width:'100%',borderCollapse:'collapse',textAlign:'left'}}>
+            <thead><tr><th>Attendee</th><th>EID</th><th>Band serial</th><th>Method</th><th>Staff ID</th><th>Timestamp</th></tr></thead>
+            <tbody>
+              {(operationsDashboard.checkins || []).filter((item: OperationsCheckin) => [item.attendee_name,item.eid,item.serial,item.method,item.staff_id,item.checked_in_at].some(value => String(value ?? '').toLowerCase().includes(operationsDashboardSearch.toLowerCase()))).map((item: OperationsCheckin,index:number) => (
+                <tr key={`${item.eid}-${item.checked_in_at}-${index}`}>
+                  <td>{item.attendee_name || '—'}</td><td>{item.eid}</td><td>{item.serial || '—'}</td><td>{item.method}</td><td>{item.staff_id || '—'}</td><td>{item.checked_in_at ? new Date(item.checked_in_at).toLocaleString() : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="cc-inventory-panel" style={{marginTop:'20px',overflowX:'auto'}}>
+          <h2>Assigned bands awaiting check-in</h2>
+          <table style={{width:'100%',borderCollapse:'collapse',textAlign:'left'}}>
+            <thead><tr><th>Attendee</th><th>EID</th><th>Band serial</th><th>Assigned at</th></tr></thead>
+            <tbody>
+              {(operationsDashboard.awaitingCheckin || []).filter((item: OperationsAwaitingCheckin) => [item.attendee_name,item.eid,item.serial,item.assigned_at].some(value => String(value ?? '').toLowerCase().includes(operationsDashboardSearch.toLowerCase()))).map((item: OperationsAwaitingCheckin,index:number) => (
+                <tr key={`${item.serial}-${index}`}>
+                  <td>{item.attendee_name || '—'}</td><td>{item.eid}</td><td>{item.serial}</td><td>{item.assigned_at ? new Date(item.assigned_at).toLocaleString() : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </>
+    )}
+  </section>
+)}
+          {activePage === 'inventory' && (
+            <section className="cc-inventory-page">
+              <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>&#8592; Back to workspace</button>
+              <p className="section-kicker">BAND INVENTORY</p><h1>Band inventory.</h1>
+              <p className="login-description">Staff can assign an already printed band. Only administrators can generate serials, print QR labels, and view inventory records.</p>
+              {inventoryError && (
+                <div className="cc-error-modal-overlay" role="presentation">
+                  <div
+                    className="cc-error-modal"
+                    role="alertdialog"
+                    aria-modal="true"
+                    aria-labelledby="cc-error-title"
+                    aria-describedby="cc-error-message"
+                  >
+                    <div className="cc-error-modal-icon" aria-hidden="true">!</div>
+                    <h2 id="cc-error-title">Action couldn't be completed</h2>
+                    <p id="cc-error-message">{inventoryError}</p>
+                    <button type="button" onClick={() => setInventoryError('')} autoFocus>
+                      Got it
+                    </button>
+                  </div>
+                </div>
+              )}
+              {inventoryMessage && (
+                <div
+                  className={`dashboard-notice cc-action-success ${
+                    inventoryMessage.includes(' assigned to ')
+                      ? 'cc-band-assigned'
+                      : inventoryMessage.includes(' checked in: ')
+                        ? 'cc-band-checked-in'
+                        : ''
+                  }`}
+                  role="status"
+                >
+                  <span className="cc-success-icon" aria-hidden="true">OK</span>
+                  <p>{inventoryMessage}</p>
+                </div>
+              )}
+              <div className="cc-attendee-summary cc-inventory-summary">
+                <div className="inventory-total"><span>Total bands</span><strong>{inventoryCounts.total}</strong></div>
+                <div className="inventory-available"><span>Available</span><strong>{inventoryCounts.available}</strong></div>
+                <div className="inventory-assigned"><span>Assigned</span><strong>{inventoryCounts.assigned}</strong></div>
+                <div className="inventory-checked-in"><span>Checked in</span><strong>{inventoryCounts.checkedIn}</strong></div>
+              </div>
+              <div className="cc-inventory-workflow-grid">
+              {signedInStaff.role === 'admin' && <section className="cc-inventory-panel"><h2>1. Generate serial inventory</h2><p>Generate up to 1,700 bands per batch. Existing serials are never overwritten.</p>
+                <div className="cc-inventory-fields"><label>Prefix<input value={inventoryPrefix} onChange={e=>setInventoryPrefix(e.target.value.toUpperCase())} maxLength={8}/></label><label>First number<input type="number" min="1" value={inventoryStart} onChange={e=>setInventoryStart(e.target.value)}/></label><label>Number of bands<input type="number" min="1" max="1700" value={inventoryCount} onChange={e=>setInventoryCount(e.target.value)}/></label></div>
+                <button className="cc-primary-action" disabled={inventoryBusy} type="button" onClick={()=>void inventoryAction('/api/inventory/generate',{prefix:inventoryPrefix,start:Number(inventoryStart),count:Number(inventoryCount)})}>{inventoryBusy?'Working...':'Generate inventory'}</button>
+              </section>}
+              {signedInStaff.role === 'admin' && <section className="cc-inventory-panel"><h2>Print QR labels</h2><p>Print QR labels for available bands in a serial range. This is part of Band Inventory, not a separate QR management page.</p>
+                <div className="cc-inventory-fields"><label>First serial number<input type="number" min="1" max="999999" value={inventoryPrintStart} onChange={e=>setInventoryPrintStart(e.target.value)}/></label><label>Number of labels<input type="number" min="1" max="1700" value={inventoryPrintCount} onChange={e=>setInventoryPrintCount(e.target.value)}/></label></div>
+                <button className="cc-primary-action" type="button" disabled={inventoryBusy} onClick={printInventoryLabels}>Preview / print QR labels</button>
+              </section>}
+              <section className="cc-inventory-panel"><h2>Assign a preprinted band</h2><p>Register walk-ins first in the Attendees screen. Scan/enter the printed serial and employee ID.</p>
+                <div className="cc-inventory-fields"><label>Wristband serial<input placeholder="ACC057" value={inventorySerial} onChange={e=>setInventorySerial(e.target.value.toUpperCase())}/></label><label>Employee ID<input placeholder="Employee EID" value={inventoryEid} onChange={e=>setInventoryEid(e.target.value)}/></label></div>
+                <button className="cc-primary-action" disabled={inventoryBusy||!inventorySerial.trim()||!inventoryEid.trim()} type="button" onClick={()=>void inventoryAction('/api/inventory/assign',{serial:inventorySerial,eid:inventoryEid})}>Assign band</button>
+              </section>
+              {signedInStaff.role === 'admin' && <section className="cc-inventory-panel"><h2>Inventory list</h2><div className="cc-inventory-fields"><label>Search serial number<input placeholder="ACC099" value={inventorySearch} onChange={e=>setInventorySearch(e.target.value.toUpperCase())}/></label><button type="button" className="dashboard-signout" onClick={()=>void loadInventory()}>Refresh</button></div>
+                <div className="cc-inventory-table-wrap"><table className="cc-inventory-table"><thead><tr><th>Serial</th><th>Status</th><th>Employee ID</th><th>Attendee</th></tr></thead><tbody>{inventoryBands.filter(b=>!inventorySearch||b.serial.includes(inventorySearch)).slice(0,10).map(b=><tr key={b.serial}><td>{b.serial}</td><td>{b.status}</td><td>{b.attendee_eid||'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â'}</td><td>{b.name||'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â'}</td></tr>)}</tbody></table></div><p className="login-description">Showing up to 10 latest inventory records.</p>
+              </section>}
+              </div>
+            </section>
           )}
 
           {activePage === 'registration' && (
 
             <>
 
-              <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>← Back to workspace</button>
+              <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>&#8592; Back to workspace</button>
 
               <div className="dashboard-welcome">
 
@@ -1017,7 +1821,6 @@ function App() {
 
               </div>
 
-              <div className="dashboard-notice"><span>Info:</span><p><strong>Development database</strong><br />Attendee records are saved in the connected database. Use fictional test records until hosting and privacy approvals are complete.</p></div>
 
               {attendeeMessage && <p className="attendee-form-message" role="status">{attendeeMessage}</p>}
 
@@ -1073,25 +1876,18 @@ function App() {
 
                   <div className="attendee-form-grid">
 
-                    <div><label htmlFor="new-eid">Employee ID</label><input id="new-eid" value={newEid} onChange={(event) => setNewEid(event.target.value)} placeholder="e.g. DEMO006" maxLength={50} required /></div>
+                    <div><label htmlFor="new-eid">Employee ID</label><input id="new-eid" value={newEid} onChange={(event) => { setNewEid(event.target.value); setAttendeeLookupMessage('') }} onBlur={(event) => { void handleAttendeeEidLookup(event.target.value) }} placeholder="e.g. DEMO006" maxLength={50} required /></div>
+<p className="login-description" role="status">{attendeeLookupBusy ? 'Looking up employee...' : attendeeLookupMessage}</p>
 
                     <div><label htmlFor="new-name">Full name</label><input id="new-name" value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="Enter full name" maxLength={120} required /></div>
 
                     <div><label htmlFor="new-email">Email address</label><input id="new-email" type="email" value={newEmail} onChange={(event) => setNewEmail(event.target.value)} placeholder="name\@example.com" maxLength={254} required /></div>
 
-                    <div><label htmlFor="new-department">Department</label><input id="new-department" value={newDepartment} onChange={(event) => setNewDepartment(event.target.value)} placeholder="e.g. Finance" maxLength={100} required /></div>
-
-                    <div>
-
-                      <label htmlFor="new-status">Registration status</label>
-
-                      <select id="new-status" value={newStatus} onChange={(event) => setNewStatus(event.target.value as Attendee['status'])}>
-
-                        <option value="Registered">Registered</option><option value="Pending">Pending</option><option value="Cancelled">Cancelled</option>
-
-                      </select>
-
-                    </div>
+                    <div><label htmlFor="new-project">Project</label><input id="new-project" value={newProject} onChange={(event) => setNewProject(event.target.value)} placeholder="e.g. Roche Aspire" maxLength={150} required /></div>
+                    <div><label htmlFor="new-contact-number">Contact number (editable)</label><input id="new-contact-number" type="tel" value={newContactNumber} onChange={(event) => setNewContactNumber(event.target.value)} placeholder="Employee mobile number" maxLength={30} required /></div>
+                    <div><label htmlFor="new-emergency-contact">Emergency contact number</label><input id="new-emergency-contact" type="tel" value={newEmergencyContact} onChange={(event) => setNewEmergencyContact(event.target.value)} maxLength={30} required /></div>
+                    <div><label htmlFor="new-colleague-contact">Colleague's contact number</label><input id="new-colleague-contact" type="tel" value={newColleagueContact} onChange={(event) => setNewColleagueContact(event.target.value)} maxLength={30} required /></div>
+                    <div><label htmlFor="new-people-lead">People Lead</label><input id="new-people-lead" value={newPeopleLead} onChange={(event) => setNewPeopleLead(event.target.value)} placeholder="People Lead name" maxLength={150} required /></div>
 
                   </div>
 
@@ -1115,7 +1911,7 @@ function App() {
 
                     <div><p className="section-kicker">EDIT REGISTRATION</p><h3>Edit attendee: {editingAttendee.eid}</h3></div>
 
-                    <p>Update attendee details and registration status.</p>
+                    <p>Update attendee details. Existing registration eligibility is preserved.</p>
 
                   </div>
 
@@ -1127,19 +1923,11 @@ function App() {
 
                     <div><label htmlFor="edit-email">Email address</label><input id="edit-email" type="email" value={editEmail} onChange={(event) => setEditEmail(event.target.value)} maxLength={254} required /></div>
 
-                    <div><label htmlFor="edit-department">Department</label><input id="edit-department" value={editDepartment} onChange={(event) => setEditDepartment(event.target.value)} maxLength={150} required /></div>
-
-                    <div>
-
-                      <label htmlFor="edit-status">Registration status</label>
-
-                      <select id="edit-status" value={editStatus} onChange={(event) => setEditStatus(event.target.value as Attendee['status'])}>
-
-                        <option value="Registered">Registered</option><option value="Pending">Pending</option><option value="Cancelled">Cancelled</option>
-
-                      </select>
-
-                    </div>
+                    <div><label htmlFor="edit-department">Project</label><input id="edit-department" value={editDepartment} onChange={(event) => setEditDepartment(event.target.value)} maxLength={150} required /></div>
+                    <div><label htmlFor="edit-contact-number">Contact number</label><input id="edit-contact-number" type="tel" value={editContactNumber} onChange={(event) => setEditContactNumber(event.target.value)} maxLength={40} /></div>
+                    <div><label htmlFor="edit-family-emergency">Emergency contact number</label><input id="edit-family-emergency" type="tel" value={editFamilyEmergency} onChange={(event) => setEditFamilyEmergency(event.target.value)} maxLength={40} /></div>
+                    <div><label htmlFor="edit-colleague-emergency">Colleague's contact number</label><input id="edit-colleague-emergency" type="tel" value={editColleagueEmergency} onChange={(event) => setEditColleagueEmergency(event.target.value)} maxLength={40} /></div>
+                    <div><label htmlFor="edit-people-lead">People Lead</label><input id="edit-people-lead" value={editPeopleLead} onChange={(event) => setEditPeopleLead(event.target.value)} maxLength={200} /></div>
 
                   </div>
 
@@ -1161,7 +1949,7 @@ function App() {
 
                   <label htmlFor="attendee-search">Search attendees</label>
 
-                  <input id="attendee-search" type="search" placeholder="Search name, EID, email or department..." value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} />
+                  <input id="attendee-search" type="search" placeholder="Search name, EID, email or project..." value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} />
 
                 </div>
 
@@ -1197,7 +1985,7 @@ function App() {
 
                 <table className="registration-table">
 
-                  <thead><tr><th>Employee ID</th><th>Attendee</th><th>Department</th><th>Status</th><th>Actions</th></tr></thead>
+                  <thead><tr><th>Employee ID</th><th>Attendee</th><th>Project</th><th>Status</th><th>Actions</th></tr></thead>
 
                   <tbody>
 
@@ -1245,7 +2033,7 @@ function App() {
 
             <div className="cc-feature-page">
 
-              <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>← Back to workspace</button>
+              <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>&#8592; Back to workspace</button>
 
               <div className="dashboard-welcome"><div><p className="section-kicker">QR WRISTBANDS</p><h1>Band<br/><span>management.</span></h1><p className="login-description">Assign a unique QR token to an attendee and print a simple wristband label.</p></div></div>
 
@@ -1267,7 +2055,7 @@ function App() {
 
             <div className="cc-feature-page">
 
-              <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>← Back to workspace</button>
+              <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>&#8592; Back to workspace</button>
 
               <div className="dashboard-welcome"><div><p className="section-kicker">EVENT ENTRY</p><h1>Attendee<br/><span>check-in.</span></h1><p className="login-description">Scan the attendee's QR wristband or enter their employee ID manually.</p></div></div>
 
@@ -1277,18 +2065,20 @@ function App() {
 
               {checkedInAttendee && (
 
-                <section className="cc-checkin-success" role="status" aria-live="polite">
-
-                  <h2>Attendee checked in</h2>
-
-                  <p><strong>Name:</strong> {checkedInAttendee.name}</p>
-
-                  <p><strong>Employee ID:</strong> {checkedInAttendee.eid}</p>
-
-                  <p><strong>Department:</strong> {checkedInAttendee.department}</p>
-
-                  <p><strong>Check-in time:</strong> {new Date(checkedInAttendee.checked_in_at).toLocaleString()}</p>
-
+                <section className="cc-checkin-success cc-checkin-celebration" role="status" aria-live="polite">
+                  <div className="cc-confetti" aria-hidden="true">
+                    {Array.from({ length: 18 }, (_, i) => <span key={i} />)}
+                  </div>
+                  <div className="cc-checkin-badge" aria-hidden="true">OK</div>
+                  <p className="cc-checkin-eyebrow">CHAMPION CELEBRATION</p>
+                  <h2>WELCOME, CHAMPION!</h2>
+                  <p className="cc-checkin-subtitle">Your check-in is confirmed. Let the celebration begin!</p>
+                  <div className="cc-checkin-attendee">
+                    <p><strong>Attendee</strong><span>{checkedInAttendee.name}</span></p>
+                    <p><strong>Employee ID</strong><span>{checkedInAttendee.eid}</span></p>
+                    <p><strong>Project</strong><span>{checkedInAttendee.department}</span></p>
+                    <p><strong>Check-in time</strong><span>{new Date(checkedInAttendee.checked_in_at).toLocaleString()}</span></p>
+                  </div>
                 </section>
 
               )}
@@ -1309,7 +2099,7 @@ function App() {
 
                   <p className="cc-help-text">Camera access requires permission and a secure context (localhost or HTTPS).</p>
 
-                  <form className="cc-manual-checkin" onSubmit={e => { e.preventDefault(); void submitCheckin(checkinInput, 'EID') }}>
+                  {signedInStaff?.role !== 'checkin' && (<form className="cc-manual-checkin" onSubmit={e => { e.preventDefault(); void submitCheckin(checkinInput, 'EID') }}>
 
                     <label htmlFor="cc-checkin-eid">Manual check-in - Employee ID</label>
 
@@ -1317,7 +2107,7 @@ function App() {
 
                     <button className="attendee-save-button" type="submit" disabled={isCheckingIn}>{isCheckingIn ? 'Checking in...' : 'Record check-in'}</button>
 
-                  </form>
+                  </form>) }
 
                 </div>
 
@@ -1326,8 +2116,6 @@ function App() {
             </div>
 
           )}
-
-          <button className="dashboard-signout" type="button" onClick={handleSignOut}>Sign out <span>→</span></button>
 
         </section>
 
@@ -1395,7 +2183,7 @@ function App() {
 
             </div>
 
-            <button className="explore-button login-button" type="submit" disabled={isLoading}>{isLoading ? 'Signing in...' : 'Sign in'}{!isLoading && <span>→</span>}</button>
+            <button className="explore-button login-button" type="submit" disabled={isLoading}>{isLoading ? 'Signing in...' : 'Sign in'}{!isLoading && <span>-&gt;</span>}</button>
 
           </form>
 

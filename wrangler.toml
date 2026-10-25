@@ -1,12 +1,12 @@
 
-name = "champion-celebration-api"
+name = "champion-celebration-demo"
 main = "worker/index.ts"
 compatibility_date = "2026-10-19"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "champion-celebration-db"
-database_id = "f270a070-0d1c-4e96-85b9-4c60847bb2fd"
+database_name = "champion-celebration-demo"
+database_id = "fda75ce8-0422-4ab6-a475-67b1220bea32"
 
 [assets]
 directory = "./dist"
@@ -27,3 +27,6 @@ persist = true
 [observability.issue_detection]
 enabled = false
 # ...
+
+[vars]
+LOCAL_DEVELOPMENT = "false"

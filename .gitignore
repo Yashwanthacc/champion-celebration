@@ -72,3 +72,26 @@ worker/create-demo-admin.ts
 # Local admin password utilities
 reset-admin-password.mjs
 test-admin-password.mjs
+# Staff credentials and temporary password files
+*temporary-passwords.txt
+*remote-temporary-passwords.txt
+*credentials*.txt
+*passwords*.txt
+.env
+.dev.vars
+
+# Local backups and sensitive diagnostics
+*.bak
+*.before-*
+*backup*
+*backup*/
+attendee-permissions-inspection.txt
+migration_inventory_option2.sql
+
+# Local Wrangler state and private data
+.wrangler/
+*.sqlite
+*.sqlite3
+*.db
+
+!migration_inventory_option2.sql

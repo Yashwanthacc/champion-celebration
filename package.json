@@ -7,13 +7,16 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "dev:worker": "wrangler dev --local --port 8787",
+    "db:setup:local": "wrangler d1 execute champion-celebration-local --local --file=worker/schema.sql && wrangler d1 execute champion-celebration-local --local --file=migration_inventory_option2.sql && wrangler d1 execute champion-celebration-local --local --file=worker/migration_qr_checkin.sql"
   },
   "dependencies": {
     "html5-qrcode": "^2.3.8",
     "qrcode": "^1.5.4",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
