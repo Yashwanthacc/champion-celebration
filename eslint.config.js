@@ -1,11 +1,11 @@
-﻿import js from '@eslint/js'
+import js from '@eslint/js'
 import globals from 'globals'
 import tseslint from 'typescript-eslint'
 import reactHooks from 'eslint-plugin-react-hooks'
 import reactRefresh from 'eslint-plugin-react-refresh'
 
 export default tseslint.config(
-  { ignores: ['dist/**', 'node_modules/**', '**/*.bak', '**/*.before-*'] },
+  { ignores: ['dist/**', 'node_modules/**', '.wrangler/**', '**/.wrangler/**', '**/*.bak', '**/*.before-*'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

@@ -14,7 +14,7 @@ type Staff = { id: string; staff_id: string; role: Role }
 
 type AttendeeStatus = 'Registered' | 'Pending' | 'Cancelled'
 
-type Attendee = { eid: string; name: string; email: string; department: string; contact_number?: string | null; family_emergency_contact_number?: string | null; colleague_emergency_contact_number?: string | null; project?: string | null; project_lead?: string | null; status: AttendeeStatus; created_at: string }
+type Attendee = { eid: string; name: string; email: string; contact_number?: string | null; family_emergency_contact_number?: string | null; colleague_emergency_contact_number?: string | null; project?: string | null; project_lead?: string | null; status: AttendeeStatus; created_at: string }
 
 const SESSION_SECONDS = 8 * 60 * 60
 
@@ -30,6 +30,30 @@ function json(body: unknown, status = 200, headers: HeadersInit = {}): Response 
 
   return new Response(JSON.stringify(body), { status, headers: h })
 
+}
+
+function csvCell(value: unknown): string {
+  const text = String(value ?? '')
+  const safe = /^[\t\r ]*[=+\-@]/.test(text) ? "'" + text : text
+  return '"' + safe.replace(/"/g, '""') + '"'
+}
+
+async function recordAudit(
+  env: Env,
+  staffUserId: string,
+  action: string,
+  attendeeEid: string | null = null,
+  wristbandSerial: string | null = null,
+  details: string | null = null
+): Promise<void> {
+  try {
+    await env.DB.prepare(
+      'INSERT INTO audit_logs (id, staff_user_id, action, attendee_eid, wristband_serial, outcome, details) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).bind(crypto.randomUUID(), staffUserId, action, attendeeEid, wristbandSerial, 'SUCCESS', details).run()
+  } catch (error) {
+    // Audit failures must be visible to operators without turning a completed event operation into a misleading retryable failure.
+    console.error('AUDIT_LOG_WRITE_ERROR', error instanceof Error ? error.message : 'Unknown error')
+  }
 }
 
 function isObject(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
@@ -170,13 +194,72 @@ export default {
 
     const apiPath = url.pathname
 
-    if (!['/api/attendees', '/api/wristbands', '/api/checkin', '/api/checkins', '/api/inventory', '/api/inventory/generate', '/api/inventory/assign', '/api/inventory/checkin', '/api/admin/operations-dashboard', '/api/admin/employee-prereg/import', '/api/mypmo/upload', '/api/mypmo/lookup'].includes(apiPath)) return json({ error: 'Not found' }, 404)
+    if (!['/api/attendees', '/api/wristbands', '/api/checkin', '/api/checkins', '/api/inventory', '/api/inventory/generate', '/api/inventory/assign', '/api/inventory/checkin', '/api/admin/operations-dashboard', '/api/admin/audit-logs', '/api/admin/employee-prereg/import', '/api/mypmo/upload', '/api/mypmo/lookup', '/api/emergency/lookup'].includes(apiPath)) return json({ error: 'Not found' }, 404)
 
     let staff: Staff | null
 
     try { staff = await authenticate(request, env) } catch { return json({ error: 'Unable to validate session' }, 500) }
 
     if (!staff) return json({ error: 'Please log in again' }, 401)
+
+    if (apiPath === '/api/admin/audit-logs' && request.method === 'GET') {
+      if (staff.role !== 'admin') return json({ error: 'Administrator access required' }, 403)
+      try {
+        const result = await env.DB.prepare(`
+          SELECT l.occurred_at,
+                 COALESCE(u.staff_id, '') AS staff_id,
+                 l.action,
+                 COALESCE(l.attendee_eid, '') AS attendee_eid,
+                 COALESCE(a.name, '') AS attendee_name,
+                 COALESCE(l.wristband_serial, '') AS wristband_serial,
+                 l.outcome,
+                 COALESCE(l.details, '') AS details
+          FROM audit_logs l
+          LEFT JOIN staff_users u ON u.id = l.staff_user_id
+          LEFT JOIN attendees a ON LOWER(a.eid) = LOWER(l.attendee_eid)
+          WHERE l.action IN (
+            'ATTENDEE_CREATED',
+            'ATTENDEE_CHECKED_IN',
+            'WRISTBAND_ASSIGNED',
+            'PRE_EVENT_IMPORT_COMPLETED'
+          )
+          ORDER BY l.occurred_at DESC
+          LIMIT 10000
+        `).all<Record<string, string | null>>()
+        const header = ['date_time', 'activity', 'employee_id', 'employee_name', 'band_serial', 'performed_by', 'outcome', 'details']
+        const activityLabels: Record<string, string> = {
+          ATTENDEE_CREATED: 'Employee registered',
+          ATTENDEE_CHECKED_IN: 'Employee checked in',
+          WRISTBAND_ASSIGNED: 'Wristband assigned',
+          PRE_EVENT_IMPORT_COMPLETED: 'Employee pre-registration import batch'
+        }
+        const lines = [
+          header.map(csvCell).join(','),
+          ...(result.results ?? []).map(row => [
+            row.occurred_at,
+            activityLabels[row.action ?? ''] ?? row.action,
+            row.attendee_eid,
+            row.attendee_name,
+            row.wristband_serial,
+            row.staff_id,
+            row.outcome,
+            row.details
+          ].map(csvCell).join(','))
+        ]
+        return new Response('\uFEFF' + lines.join('\r\n'), {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/csv; charset=utf-8',
+            'Content-Disposition': 'attachment; filename="champion-celebration-audit-logs.csv"',
+            'Cache-Control': 'no-store',
+            'X-Content-Type-Options': 'nosniff'
+          }
+        })
+      } catch (error) {
+        console.error('AUDIT_LOG_EXPORT_ERROR', error instanceof Error ? error.message : 'Unknown error')
+        return json({ error: 'Could not export audit logs. Apply migration_audit_logs.sql first.' }, 500)
+      }
+    }
 
     if (apiPath === '/api/wristbands') return json({error:'Legacy QR wristbands are disabled. Use preprinted inventory bands.'},410)
 
@@ -194,11 +277,11 @@ export default {
             (SELECT COUNT(*) FROM attendees WHERE status = 'Registered') AS registeredAttendees,
             (SELECT COUNT(*) FROM attendees
               WHERE status = 'Registered'
-              AND date(datetime(created_at, '+5 hours', '+30 minutes')) < '2026-11-20'
+              AND registration_source = 'PRE_EVENT_IMPORT'
             ) AS preEventRegistrations,
             (SELECT COUNT(*) FROM attendees
               WHERE status = 'Registered'
-              AND date(datetime(created_at, '+5 hours', '+30 minutes')) = '2026-11-20'
+              AND registration_source = 'MANUAL'
             ) AS liveRegistrations,
             (SELECT COUNT(*) FROM attendees WHERE status = 'Pending') AS pendingAttendees,
             (SELECT COUNT(*) FROM attendees WHERE status = 'Cancelled') AS cancelledAttendees,
@@ -283,8 +366,8 @@ export default {
           COUNT(*) AS total FROM wristband_inventory`).first<Record<string, number>>()
 
         const bands = url.searchParams.get('forPrint') === '1'
-          ? await env.DB.prepare(`SELECT w.serial,w.qr_token,w.status,w.attendee_eid,w.created_at,w.assigned_at,w.checked_in_at,a.name,a.department FROM wristband_inventory w LEFT JOIN attendees a ON a.eid=w.attendee_eid ORDER BY w.serial`).all()
-          : await env.DB.prepare(`SELECT w.serial,w.qr_token,w.status,w.attendee_eid,w.created_at,w.assigned_at,w.checked_in_at,a.name,a.department FROM wristband_inventory w LEFT JOIN attendees a ON a.eid=w.attendee_eid ORDER BY w.created_at DESC LIMIT 10`).all()
+          ? await env.DB.prepare(`SELECT w.serial,w.qr_token,w.status,w.attendee_eid,w.created_at,w.assigned_at,w.checked_in_at,a.name,a.project FROM wristband_inventory w LEFT JOIN attendees a ON a.eid=w.attendee_eid ORDER BY w.serial`).all()
+          : await env.DB.prepare(`SELECT w.serial,w.qr_token,w.status,w.attendee_eid,w.created_at,w.assigned_at,w.checked_in_at,a.name,a.project FROM wristband_inventory w LEFT JOIN attendees a ON a.eid=w.attendee_eid ORDER BY w.created_at DESC LIMIT 10`).all()
 
         return json({ ok:true, counts: counts ?? {available:0,assigned:0,checkedIn:0,revoked:0,total:0}, bands:bands.results })
 
@@ -322,6 +405,7 @@ export default {
         stmts.push(env.DB.prepare("INSERT INTO wristband_inventory (id,serial,qr_token,status) VALUES (?,?,?,'Available')").bind(id,serial,token))
 
         stmts.push(env.DB.prepare("INSERT INTO wristband_inventory_audit (id,wristband_id,serial,action,performed_by,details) VALUES (?,?,?,'GENERATED',?,?)").bind(crypto.randomUUID(),id,serial,staff.id,'Option 2 inventory generation'))
+        stmts.push(env.DB.prepare("INSERT INTO audit_logs (id,staff_user_id,action,attendee_eid,wristband_serial,outcome,details) VALUES (?,?,?,NULL,?,'SUCCESS',?)").bind(crypto.randomUUID(),staff.id,'WRISTBAND_GENERATED',serial,'Inventory band generated'))
 
       }
 
@@ -341,7 +425,7 @@ export default {
 
       const serial=body.serial.trim().toUpperCase(), eid=body.eid.trim()
 
-      const attendee=await env.DB.prepare("SELECT eid,name,email,department,status FROM attendees WHERE eid=?").bind(eid).first<{eid:string;name:string;email:string;department:string;status:string}>()
+      const attendee=await env.DB.prepare("SELECT eid,name,email,project,status FROM attendees WHERE eid=?").bind(eid).first<{eid:string;name:string;email:string;project:string;status:string}>()
 
       if(!attendee) return json({error:'Attendee not found. Register walk-ins in Attendees first.'},404)
 
@@ -364,8 +448,9 @@ export default {
         if(upd.meta.changes!==1) return json({error:'Wristband was just assigned by another staff member. Refresh inventory.'},409)
 
         await env.DB.prepare("INSERT INTO wristband_inventory_audit (id,wristband_id,serial,attendee_eid,action,performed_by) VALUES (?,?,?,?,'ASSIGNED',?)").bind(crypto.randomUUID(),band.id,serial,eid,staff.id).run()
+        await recordAudit(env, staff.id, 'WRISTBAND_ASSIGNED', eid, serial, 'Inventory band assigned')
 
-        return json({ok:true,serial,attendee:{eid:attendee.eid,name:attendee.name,department:attendee.department},status:'Assigned'},201)
+        return json({ok:true,serial,attendee:{eid:attendee.eid,name:attendee.name,project:attendee.project},status:'Assigned'},201)
 
       } catch(e) { console.error('INVENTORY_ASSIGN_ERROR',e instanceof Error?e.message:'Unknown error'); return json({error:'Assignment failed; refresh and verify the attendee and band status.'},409) }
 
@@ -381,7 +466,7 @@ export default {
 
       const serial=body.serial.trim().toUpperCase()
 
-      const band=await env.DB.prepare("SELECT w.id,w.serial,w.status,w.attendee_eid,a.name,a.email,a.department,a.status AS attendee_status FROM wristband_inventory w LEFT JOIN attendees a ON a.eid=w.attendee_eid WHERE w.serial=?").bind(serial).first<{id:string;serial:string;status:string;attendee_eid:string|null;name:string|null;email:string|null;department:string|null;attendee_status:string|null}>()
+      const band=await env.DB.prepare("SELECT w.id,w.serial,w.status,w.attendee_eid,a.name,a.email,a.project,a.status AS attendee_status FROM wristband_inventory w LEFT JOIN attendees a ON a.eid=w.attendee_eid WHERE w.serial=?").bind(serial).first<{id:string;serial:string;status:string;attendee_eid:string|null;name:string|null;email:string|null;project:string|null;attendee_status:string|null}>()
 
       if(!band) return json({error:'Wristband not found'},404)
 
@@ -406,222 +491,196 @@ export default {
         if(upd.meta.changes!==1) return json({error:'Check-in state changed; contact the event administrator to reconcile.'},409)
 
         await env.DB.prepare("INSERT INTO wristband_inventory_audit (id,wristband_id,serial,attendee_eid,action,performed_by) VALUES (?,?,?,?,'CHECKED_IN',?)").bind(crypto.randomUUID(),band.id,serial,band.attendee_eid,staff.id).run()
+        await recordAudit(env, staff.id, 'ATTENDEE_CHECKED_IN', band.attendee_eid, serial, 'QR wristband check-in')
 
         const checked=await env.DB.prepare('SELECT checked_in_at FROM attendee_checkins WHERE attendee_eid=?').bind(band.attendee_eid).first<{checked_in_at:string}>()
 
-        return json({ok:true,serial,attendee:{eid:band.attendee_eid,name:band.name,department:band.department},checked_in_at:checked?.checked_in_at},201)
+        return json({ok:true,serial,attendee:{eid:band.attendee_eid,name:band.name,project:band.project},checked_in_at:checked?.checked_in_at},201)
 
       } catch(e) { console.error('INVENTORY_CHECKIN_ERROR',e instanceof Error?e.message:'Unknown error'); return json({error:'Check-in failed or attendee was already checked in'},409) }
 
     }
 
-    // MYPMO_ROUTES_START
-    // MyPMO employee data is kept separate from attendee registrations.
-
-    if (apiPath === '/api/mypmo/upload' && request.method === 'POST') {
-      if (staff.role !== 'admin') {
-        return json({ error: 'You do not have permission to import MyPMO data' }, 403)
-      }
-
-      const maxFileBytes = 10 * 1024 * 1024
-      const contentLength = Number(request.headers.get('content-length') || '0')
-
-      if (contentLength > maxFileBytes + 100_000) {
-        return json({ error: 'Upload is too large. Maximum Excel file size is 10 MB.' }, 413)
-      }
-
-      if (!request.headers.get('content-type')?.toLowerCase().includes('multipart/form-data')) {
-        return json({ error: 'Upload an Excel file using multipart/form-data' }, 415)
-      }
-
+    // Emergency lookup is read-only and available to any authenticated event staff role.
+    if (apiPath === '/api/emergency/lookup' && request.method === 'GET') {
+      const query = (url.searchParams.get('q') || '').trim()
+      if (!query || query.length > 200) return json({ error: 'Enter or scan a wristband number or Enterprise ID.' }, 400)
       try {
-        const form = await request.formData()
-        const file = form.get('file')
+        const band = await env.DB.prepare(`
+          SELECT w.serial, w.status AS band_status, w.attendee_eid,
+                 w.assigned_at, w.checked_in_at AS band_checked_in_at,
+                 a.eid, a.name, a.email, a.contact_number,
+                 a.family_emergency_contact_number, a.colleague_emergency_contact_number,
+                 a.project, a.project_lead, a.status AS attendee_status,
+                 a.registration_source, c.checked_in_at
+          FROM wristband_inventory w
+          LEFT JOIN attendees a ON a.eid = w.attendee_eid
+          LEFT JOIN attendee_checkins c ON c.attendee_eid = a.eid
+          WHERE UPPER(w.serial) = UPPER(?)
+          LIMIT 1
+        `).bind(query).first<Record<string, unknown>>()
 
-        if (!(file instanceof File)) {
-          return json({ error: 'Select an Excel file in the file field' }, 400)
-        }
+        let attendee = band
+        let bandInfo: Record<string, unknown> | null = band ? {
+          serial: band.serial, status: band.band_status,
+          assigned_at: band.assigned_at, checked_in_at: band.band_checked_in_at
+        } : null
 
-        if (file.size === 0 || file.size > maxFileBytes) {
-          return json({ error: 'Excel file must be between 1 byte and 10 MB' }, 413)
-        }
-
-        const lowerName = file.name.toLowerCase()
-        if (!lowerName.endsWith('.xlsx') && !lowerName.endsWith('.xls')) {
-          return json({ error: 'Only .xlsx and .xls files are accepted' }, 400)
-        }
-
-        const bytes = new Uint8Array(await file.arrayBuffer())
-        const workbook = XLSX.read(bytes, { type: 'array', cellDates: false })
-
-        if (!workbook.SheetNames.length) {
-          return json({ error: 'The workbook has no worksheets' }, 400)
-        }
-
-        const sheet = workbook.Sheets[workbook.SheetNames[0]]
-        if (!sheet) {
-          return json({ error: 'Could not read the first worksheet' }, 400)
-        }
-
-        const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
-          defval: '',
-          raw: false
-        })
-
-        if (!rows.length) {
-          return json({ error: 'The first worksheet contains no employee rows' }, 400)
-        }
-
-        const requiredHeaders = [
-          'EnterpriseId',
-          'ResourceName',
-          'InternetMail',
-          'Project',
-          'Reporting Line Manager'
-        ]
-
-        const actualHeaders = new Set(
-          XLSX.utils.sheet_to_json<unknown[]>(sheet, {
-            header: 1,
-            defval: '',
-            blankrows: false
-          })[0]?.map(value => String(value).trim()) ?? []
-        )
-
-        const missingHeaders = requiredHeaders.filter(header => !actualHeaders.has(header))
-        if (missingHeaders.length) {
-          return json({
-            error: 'The workbook is missing required column headers',
-            missingHeaders
-          }, 400)
-        }
-
-        if (rows.length > 20000) {
-          return json({ error: 'The workbook contains too many rows. Maximum is 20,000.' }, 400)
-        }
-
-        const seenIds = new Set<string>()
-        const employees: Array<{
-          enterpriseId: string
-          fullName: string
-          email: string
-          contactNumber: string
-          project: string
-          projectLead: string
-        }> = []
-
-        for (let index = 0; index < rows.length; index++) {
-          const row = rows[index]
-          const enterpriseId = String(row.EnterpriseId ?? '').trim()
-          const fullName = String(row.ResourceName ?? '').trim()
-          const email = String(row.InternetMail ?? '').trim().toLowerCase()
-          const contactNumber = String(row.MobilePhone ?? '').trim()
-          const project = String(row.Project ?? '').trim()
-          const projectLead = String(row['Reporting Line Manager'] ?? '').trim()
-
-          if (!enterpriseId || enterpriseId.length > 100) {
-            return json({ error: `Invalid EnterpriseId at worksheet data row ${index + 2}` }, 400)
+        if (!attendee) {
+          attendee = await env.DB.prepare(`
+            SELECT a.eid, a.name, a.email, a.contact_number,
+                   a.family_emergency_contact_number, a.colleague_emergency_contact_number,
+                   a.project, a.project_lead, a.status AS attendee_status,
+                   a.registration_source, c.checked_in_at,
+                   w.serial, w.status AS band_status, w.assigned_at,
+                   w.checked_in_at AS band_checked_in_at
+            FROM attendees a
+            LEFT JOIN attendee_checkins c ON c.attendee_eid = a.eid
+            LEFT JOIN wristband_inventory w ON w.attendee_eid = a.eid
+            WHERE LOWER(a.eid) = LOWER(?)
+            LIMIT 1
+          `).bind(query).first<Record<string, unknown>>()
+          if (attendee && attendee.serial) bandInfo = {
+            serial: attendee.serial, status: attendee.band_status,
+            assigned_at: attendee.assigned_at, checked_in_at: attendee.band_checked_in_at
           }
-
-          if (!fullName || fullName.length > 200) {
-            return json({ error: `Invalid ResourceName at worksheet data row ${index + 2}` }, 400)
-          }
-
-          if (!email || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-            return json({ error: `Invalid InternetMail at worksheet data row ${index + 2}` }, 400)
-          }
-
-          if (contactNumber.length > 50 || project.length > 200 || projectLead.length > 200) {
-            return json({ error: `A field is too long at worksheet data row ${index + 2}` }, 400)
-          }
-
-          const normalizedId = enterpriseId.toLowerCase()
-          if (seenIds.has(normalizedId)) {
-            return json({ error: `Duplicate EnterpriseId found at worksheet data row ${index + 2}` }, 400)
-          }
-
-          seenIds.add(normalizedId)
-          employees.push({ enterpriseId, fullName, email, contactNumber, project, projectLead })
         }
 
-        // Validate the entire workbook before writing. Upsert only the MyPMO lookup table.
-        const statements = employees.map(employee =>
-          env.DB.prepare(`
-            INSERT INTO mypmo_resources
-              (enterprise_id, full_name, email, contact_number, project, project_lead, imported_at)
-            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(enterprise_id) DO UPDATE SET
-              full_name = excluded.full_name,
-              email = excluded.email,
-              contact_number = excluded.contact_number,
-              project = excluded.project,
-              project_lead = excluded.project_lead,
-              imported_at = CURRENT_TIMESTAMP
-          `).bind(
-            employee.enterpriseId,
-            employee.fullName,
-            employee.email,
-            employee.contactNumber || null,
-            employee.project || null,
-            employee.projectLead || null
-          )
-        )
+        const eid = typeof attendee?.eid === 'string' ? attendee.eid : (typeof attendee?.attendee_eid === 'string' ? attendee.attendee_eid : '')
+        const mypmo = eid ? await env.DB.prepare(`
+          SELECT roster_type, enterprise_id, full_name, email, project, project_lead, resource_status
+          FROM mypmo_resources_v2 WHERE LOWER(enterprise_id) = LOWER(?) ORDER BY roster_type
+        `).bind(eid).all<Record<string, unknown>>() : { results: [] }
 
-        // Keep each D1 batch manageable for larger daily files.
-        for (let offset = 0; offset < statements.length; offset += 100) {
-          await env.DB.batch(statements.slice(offset, offset + 100))
+        if (!attendee && !band) {
+          const rosterOnly = await env.DB.prepare(`
+            SELECT roster_type, enterprise_id, full_name, email, project, project_lead, resource_status
+            FROM mypmo_resources_v2 WHERE LOWER(enterprise_id) = LOWER(?) ORDER BY roster_type
+          `).bind(query).all<Record<string, unknown>>()
+          if (!rosterOnly.results?.length) return json({ found: false, error: 'No attendee, wristband, or MyPMO record matched this value.' }, 404)
+          return json({ found: true, registered: false, attendee: null, band: null, mypmo: rosterOnly.results,
+            message: 'MyPMO record found, but this person has no matching event registration or assigned wristband.' })
         }
 
         return json({
-          ok: true,
-          imported: employees.length,
-          message: 'MyPMO data imported. Existing attendee and check-in records were not changed.'
+          found: true,
+          registered: Boolean(attendee?.eid),
+          attendee: attendee && typeof attendee.eid === 'string' ? {
+            eid: attendee.eid,
+            name: attendee.name || null, email: attendee.email || null,
+            contact_number: attendee.contact_number || null,
+            family_emergency_contact_number: attendee.family_emergency_contact_number || null,
+            colleague_emergency_contact_number: attendee.colleague_emergency_contact_number || null,
+            project: attendee.project || null, project_lead: attendee.project_lead || null,
+            status: attendee.attendee_status || null, registration_source: attendee.registration_source || null,
+            checked_in_at: attendee.checked_in_at || attendee.band_checked_in_at || null
+          } : null,
+          band: bandInfo,
+          mypmo: mypmo.results || [],
+          message: attendee?.eid ? 'Attendee details found. This lookup did not change check-in status.' : 'Wristband found, but it is not assigned to an event attendee.'
         })
       } catch (error) {
+        console.error('EMERGENCY_LOOKUP_ERROR', error instanceof Error ? error.message : 'Unknown error')
+        return json({ error: 'Could not retrieve emergency details. Please contact the event administrator.' }, 500)
+      }
+    }
+
+    // MYPMO_ROUTES_START
+    // Aspire and IX rosters are stored independently in mypmo_resources_v2.
+
+    if (apiPath === '/api/mypmo/upload' && request.method === 'POST') {
+      if (staff.role !== 'admin') return json({ error: 'You do not have permission to import MyPMO data' }, 403)
+      const maxFileBytes = 10 * 1024 * 1024
+      const contentLength = Number(request.headers.get('content-length') || '0')
+      if (contentLength > maxFileBytes + 100_000) return json({ error: 'Upload is too large. Maximum Excel file size is 10 MB.' }, 413)
+      if (!request.headers.get('content-type')?.toLowerCase().includes('multipart/form-data')) return json({ error: 'Upload an Excel file using multipart/form-data' }, 415)
+      try {
+        const form = await request.formData()
+        const file = form.get('file')
+        const roster = String(form.get('roster') || 'ASPIRE').toUpperCase()
+        if (roster !== 'ASPIRE' && roster !== 'IX') return json({ error: 'Choose Roche Aspire MyPMO or Roche IX MyPMO.' }, 400)
+        if (!(file instanceof File)) return json({ error: 'Select an Excel file in the file field' }, 400)
+        if (file.size === 0 || file.size > maxFileBytes) return json({ error: 'Excel file must be between 1 byte and 10 MB' }, 413)
+        if (!/\.(xlsx|xls)$/i.test(file.name)) return json({ error: 'Only .xlsx and .xls files are accepted' }, 400)
+        const workbook = XLSX.read(new Uint8Array(await file.arrayBuffer()), { type: 'array', cellDates: false })
+        if (!workbook.SheetNames.length) return json({ error: 'The workbook has no worksheets' }, 400)
+        const sheet = workbook.Sheets[workbook.SheetNames[0]]
+        if (!sheet) return json({ error: 'Could not read the first worksheet' }, 400)
+        const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '', raw: false })
+        if (!rows.length) return json({ error: 'The first worksheet contains no employee rows' }, 400)
+        if (rows.length > 20000) return json({ error: 'The workbook contains too many rows. Maximum is 20,000.' }, 400)
+        const headerRows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '', blankrows: false })
+        const actualHeaders = new Set((headerRows[0] ?? []).map(value => String(value).trim()))
+        const requiredHeaders = roster === 'ASPIRE'
+          ? ['EnterpriseId', 'ResourceName', 'InternetMail', 'Project', 'Reporting Line Manager']
+          : ['EnterpriseId', 'ResourceStatus', 'ResourceName', 'InternetMail', 'SOWName', 'PeopleLead(Workday)']
+        const missingHeaders = requiredHeaders.filter(header => !actualHeaders.has(header))
+        if (missingHeaders.length) return json({ error: 'The workbook is missing required column headers for the selected roster', missingHeaders }, 400)
+        const seenIds = new Set<string>()
+        const employees: Array<{ enterpriseId:string; fullName:string; email:string; contactNumber:string; project:string; projectLead:string; status:string }> = []
+        let skippedStatus = 0
+        for (let index = 0; index < rows.length; index++) {
+          const row = rows[index]
+          const status = String(row.ResourceStatus ?? '').trim()
+          if (roster === 'IX' && !['active', 'onboarding'].includes(status.toLowerCase())) { skippedStatus++; continue }
+          const enterpriseId = String(row.EnterpriseId ?? '').trim()
+          const fullName = String(row.ResourceName ?? '').trim()
+          const email = String(row.InternetMail ?? '').trim().toLowerCase()
+          // Neither MyPMO roster is a source for attendee contact numbers.
+          const contactNumber = ''
+          const project = String(roster === 'IX' ? (row.SOWName ?? '') : (row.Project ?? '')).trim()
+          const projectLead = String(roster === 'IX' ? (row['PeopleLead(Workday)'] ?? '') : (row['Reporting Line Manager'] ?? '')).trim()
+          if (!enterpriseId || enterpriseId.length > 100) return json({ error: `Invalid EnterpriseId at worksheet data row ${index + 2}` }, 400)
+          if (!fullName || fullName.length > 200) return json({ error: `Invalid ResourceName at worksheet data row ${index + 2}` }, 400)
+          if (!email || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ error: `Invalid InternetMail at worksheet data row ${index + 2}` }, 400)
+          if (contactNumber.length > 50 || project.length > 200 || projectLead.length > 200) return json({ error: `A field is too long at worksheet data row ${index + 2}` }, 400)
+          const normalizedId = enterpriseId.toLowerCase()
+          if (seenIds.has(normalizedId)) return json({ error: `Duplicate EnterpriseId found at worksheet data row ${index + 2}` }, 400)
+          seenIds.add(normalizedId)
+          employees.push({ enterpriseId, fullName, email, contactNumber, project, projectLead, status: roster === 'IX' ? status : 'ACTIVE' })
+        }
+        if (!employees.length) return json({ error: 'No eligible rows were found. IX imports include only Active and Onboarding resources.' }, 400)
+        const statements = employees.map(employee => env.DB.prepare(`
+          INSERT INTO mypmo_resources_v2
+            (roster_type, enterprise_id, full_name, email, contact_number, project, project_lead, resource_status, imported_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          ON CONFLICT(roster_type, enterprise_id) DO UPDATE SET
+            full_name=excluded.full_name, email=excluded.email, contact_number=excluded.contact_number,
+            project=excluded.project, project_lead=excluded.project_lead,
+            resource_status=excluded.resource_status, imported_at=CURRENT_TIMESTAMP
+        `).bind(roster, employee.enterpriseId, employee.fullName, employee.email, employee.contactNumber || null,
+          employee.project || null, employee.projectLead || null, employee.status))
+        for (let offset = 0; offset < statements.length; offset += 100) await env.DB.batch(statements.slice(offset, offset + 100))
+        return json({ ok: true, imported: employees.length, skippedStatus, roster, message: `${roster === 'IX' ? 'Roche IX' : 'Roche Aspire'} MyPMO import complete: ${employees.length} eligible resources imported${roster === 'IX' ? `; ${skippedStatus} other-status rows skipped` : ''}. The other roster and attendee/check-in records were not changed.` })
+      } catch (error) {
         console.error('MYPMO_IMPORT_ERROR', error instanceof Error ? error.message : 'Unknown error')
-        return json({ error: 'Could not import the workbook. Check its format and try again.' }, 400)
+        return json({ error: 'Could not import the workbook. Apply the MyPMO roster migration, check the workbook format, and try again.' }, 400)
       }
     }
 
     if (apiPath === '/api/mypmo/lookup' && request.method === 'GET') {
-      if (!canRegister(staff.role)) {
-        return json({ error: 'You do not have permission to look up MyPMO records' }, 403)
-      }
-
+      if (!canRegister(staff.role)) return json({ error: 'You do not have permission to look up MyPMO records' }, 403)
       const enterpriseId = (url.searchParams.get('eid') || '').trim()
-
-      if (!enterpriseId || enterpriseId.length > 100) {
-        return json({ error: 'Provide a valid Enterprise ID using the eid query parameter' }, 400)
-      }
-
+      const roster = (url.searchParams.get('roster') || '').toUpperCase()
+      if (!enterpriseId || enterpriseId.length > 100) return json({ error: 'Provide a valid Enterprise ID using the eid query parameter' }, 400)
+      if (roster && roster !== 'ASPIRE' && roster !== 'IX') return json({ error: 'Invalid roster selection' }, 400)
       try {
-        const employee = await env.DB.prepare(`
-          SELECT enterprise_id, full_name, email, contact_number, project, project_lead
-          FROM mypmo_resources
-          WHERE enterprise_id = ?
-        `).bind(enterpriseId).first<{
-          enterprise_id: string
-          full_name: string
-          email: string
-          contact_number: string | null
-          project: string | null
-          project_lead: string | null
-        }>()
-
-        if (!employee) {
-          return json({ found: false, message: 'Enterprise ID not found in MyPMO' }, 404)
-        }
-
-        return json({ found: true, employee })
+        const result = roster
+          ? await env.DB.prepare(`SELECT roster_type, enterprise_id, full_name, email, NULL AS contact_number, project, project_lead, resource_status FROM mypmo_resources_v2 WHERE roster_type=? AND LOWER(enterprise_id)=LOWER(?)`).bind(roster, enterpriseId).all()
+          : await env.DB.prepare(`SELECT roster_type, enterprise_id, full_name, email, NULL AS contact_number, project, project_lead, resource_status FROM mypmo_resources_v2 WHERE LOWER(enterprise_id)=LOWER(?) ORDER BY roster_type`).bind(enterpriseId).all()
+        const matches = (result.results ?? []) as Array<{ roster_type:string; enterprise_id:string; full_name:string; email:string; contact_number:string|null; project:string|null; project_lead:string|null; resource_status:string|null }>
+        if (!matches.length) return json({ found: false, matches: [], message: 'Enterprise ID not found in either MyPMO roster' }, 404)
+        if (matches.length > 1) return json({ found: false, ambiguous: true, matches, message: 'This Enterprise ID exists in both Aspire and IX. Select the correct roster.' }, 200)
+        const employee = matches[0]
+        return json({ found: true, employee, matches })
       } catch {
-        return json({ error: 'Could not look up the MyPMO record' }, 500)
+        return json({ error: 'Could not look up the MyPMO record. Apply the MyPMO roster migration first.' }, 500)
       }
     }
-    if (apiPath === '/api/admin/employee-prereg/import' && request.method === 'POST') {
+        if (apiPath === '/api/admin/employee-prereg/import' && request.method === 'POST') {
       if (staff.role !== 'admin') {
         return json({ error: 'Administrator access required' }, 403)
       }
-
       if (!request.headers.get('content-type')?.toLowerCase().includes('application/json')) {
         return json({ error: 'Unsupported content type' }, 415)
       }
@@ -630,74 +689,196 @@ export default {
       if (!isObject(body) || !Array.isArray(body.attendees)) {
         return json({ error: 'Expected an attendees array' }, 400)
       }
-
       const rows = body.attendees
       if (rows.length < 1 || rows.length > 500) {
         return json({ error: 'Import between 1 and 500 valid employee rows at a time' }, 400)
       }
+      const approvedMissingEids = new Set(
+        Array.isArray(body.approvedMissingEids)
+          ? body.approvedMissingEids.filter((value): value is string => typeof value === 'string').map((value) => value.trim().toLowerCase())
+          : []
+      )
 
       const prepared: Array<{
-        eid: string; name: string; email: string; project: string
-        contact: string; family: string; colleague: string; lead: string
+        eid: string
+        name: string
+        email: string
+        project: string
+        contact: string
+        family: string
+        colleague: string
+        lead: string
       }> = []
       const seenEids = new Set<string>()
       const seenEmails = new Set<string>()
-
-      for (const item of rows) {
-        if (!isObject(item)) return json({ error: 'Invalid employee row; nothing was imported' }, 400)
-
-        const eid = typeof item.eid === 'string' ? item.eid.trim() : ''
-        const name = typeof item.name === 'string' ? item.name.trim() : ''
-        const email = typeof item.email === 'string' ? item.email.trim().toLowerCase() : ''
-        const project = typeof item.project === 'string' ? item.project.trim() :
-          (typeof item.department === 'string' ? item.department.trim() : '')
-        const contact = typeof item.contact_number === 'string' ? item.contact_number.trim() : ''
-        const family = typeof item.family_emergency_contact_number === 'string' ? item.family_emergency_contact_number.trim() : ''
-        const colleague = typeof item.colleague_emergency_contact_number === 'string' ? item.colleague_emergency_contact_number.trim() : ''
-        const lead = typeof item.project_lead === 'string' ? item.project_lead.trim() : ''
-
-        if (!eid || eid.length > 100 || !name || name.length > 200 ||
-            email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
-            !project || project.length > 150 || contact.length > 30 ||
-            family.length > 30 || colleague.length > 30 || lead.length > 150) {
-          return json({ error: 'One or more rows have invalid required fields; nothing was imported' }, 400)
-        }
-
-        if (seenEids.has(eid.toLowerCase()) || seenEmails.has(email)) {
-          return json({ error: 'Duplicate employee ID or email in submitted rows; nothing was imported' }, 400)
-        }
-
-        seenEids.add(eid.toLowerCase())
-        seenEmails.add(email)
-        prepared.push({ eid, name, email, project, contact, family, colleague, lead })
-      }
-
-      let inserted = 0
-      let skipped = 0
+      const missingEmployees: Array<{ eid: string; name: string; email: string; project: string; roster_type?: string }> = []
 
       try {
+        // Validate and resolve every row before inserting any attendees.
+        for (const item of rows) {
+          if (!isObject(item)) return json({ error: 'Invalid employee row; nothing was imported' }, 400)
+          const eid = typeof item.eid === 'string' ? item.eid.trim() : ''
+          const rosterValue = typeof item.roster_type === 'string' ? item.roster_type.trim().toUpperCase() : ''
+          const rosterType = rosterValue === 'ASPIRE' || rosterValue === 'IX' ? rosterValue : ''
+          if (rosterValue && !rosterType) return json({ error: `Invalid roster for Enterprise ID "${eid}". Use ASPIRE or IX; nothing was imported.` }, 400)
+          const contact = typeof item.contact_number === 'string' ? item.contact_number.trim() : ''
+          const family = typeof item.family_emergency_contact_number === 'string' ? item.family_emergency_contact_number.trim() : ''
+          const colleague = typeof item.colleague_emergency_contact_number === 'string' ? item.colleague_emergency_contact_number.trim() : ''
+
+          if (!eid || eid.length > 100 || contact.length > 30 || family.length > 30 || colleague.length > 30) {
+            return json({ error: 'One or more rows have invalid employee IDs or contact fields; nothing was imported' }, 400)
+          }
+          const normalizedEid = eid.toLowerCase()
+          if (seenEids.has(normalizedEid)) {
+            return json({ error: 'Duplicate employee ID in submitted rows; nothing was imported' }, 400)
+          }
+          seenEids.add(normalizedEid)
+
+          const employeeMatches = rosterType
+            ? await env.DB.prepare(`
+                SELECT roster_type, enterprise_id, full_name, email, NULL AS contact_number, project, project_lead
+                FROM mypmo_resources_v2
+                WHERE roster_type = ? AND LOWER(enterprise_id) = LOWER(?)
+                LIMIT 2
+              `).bind(rosterType, eid).all<{
+                  roster_type: string
+                  enterprise_id: string
+                  full_name: string
+                  email: string
+                  contact_number: string | null
+                  project: string | null
+                  project_lead: string | null
+                }>()
+            : await env.DB.prepare(`
+                SELECT roster_type, enterprise_id, full_name, email, NULL AS contact_number, project, project_lead
+                FROM mypmo_resources_v2
+                WHERE LOWER(enterprise_id) = LOWER(?)
+                ORDER BY roster_type
+                LIMIT 2
+              `).bind(eid).all<{
+            roster_type: string
+            enterprise_id: string
+            full_name: string
+            email: string
+            contact_number: string | null
+            project: string | null
+            project_lead: string | null
+          }>()
+          if ((employeeMatches.results ?? []).length > 1) {
+            return json({ error: `Enterprise ID "${eid}" exists in both Aspire and IX. Add a Roster column to the pre-registration file and enter ASPIRE or IX for this row; nothing was imported.` }, 400)
+          }
+          const employee = employeeMatches.results?.[0]
+
+          if (!employee) {
+            if (!approvedMissingEids.has(normalizedEid)) {
+              missingEmployees.push({
+                eid,
+                name: typeof item.name === 'string' ? item.name.trim() : '',
+                email: typeof item.email === 'string' ? item.email.trim() : '',
+                project: typeof item.project === 'string' ? item.project.trim() : '',
+                roster_type: rosterType || undefined
+              })
+              continue
+            }
+            const fallbackName = typeof item.name === 'string' ? item.name.trim() : ''
+            const fallbackEmail = typeof item.email === 'string' ? item.email.trim().toLowerCase() : ''
+            const fallbackProject = typeof item.project === 'string' ? item.project.trim() : ''
+            if (!fallbackName || !fallbackEmail || !fallbackProject) {
+              return json({ error: `Approved MyPMO-missing employee "${eid}" must have a name, valid email, and project in the spreadsheet.` }, 400)
+            }
+            if (fallbackEmail.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(fallbackEmail)) {
+              return json({ error: `Approved MyPMO-missing employee "${eid}" has an invalid email in the spreadsheet.` }, 400)
+            }
+            if (seenEmails.has(fallbackEmail)) {
+              return json({ error: 'Duplicate email in submitted employees; nothing was imported' }, 400)
+            }
+            seenEmails.add(fallbackEmail)
+            prepared.push({
+              eid,
+              name: fallbackName,
+              email: fallbackEmail,
+              project: fallbackProject,
+              contact,
+              family,
+              colleague,
+              lead: typeof item.project_lead === 'string' ? item.project_lead.trim() : ''
+            })
+            continue
+          }
+          if (!employee.full_name?.trim() || !employee.email?.trim() || !employee.project?.trim()) {
+            return json({ error: `MyPMO record for "${eid}" is missing a required name, email, or project; nothing was imported.` }, 400)
+          }
+          const email = employee.email.trim().toLowerCase()
+          if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+            return json({ error: `MyPMO record for "${eid}" has an invalid email; nothing was imported.` }, 400)
+          }
+          if (seenEmails.has(email)) {
+            return json({ error: 'Duplicate email in MyPMO records for submitted employees; nothing was imported' }, 400)
+          }
+          seenEmails.add(email)
+
+          prepared.push({
+            eid: employee.enterprise_id,
+            name: employee.full_name.trim(),
+            email,
+            project: employee.project.trim(),
+            contact,
+            family,
+            colleague,
+            lead: (employee.project_lead || '').trim()
+          })
+        }
+
+        if (missingEmployees.length > 0) {
+          return json({
+            ok: false,
+            error: 'Review employees missing from MyPMO. No records were imported yet.',
+            missingEmployees
+          }, 409)
+        }
+
+        let inserted = 0
+        let skipped = 0
         for (const row of prepared) {
           const existing = await env.DB.prepare(
             'SELECT eid FROM attendees WHERE LOWER(eid) = LOWER(?) OR LOWER(email) = LOWER(?) LIMIT 1'
           ).bind(row.eid, row.email).first<{ eid: string }>()
-
           if (existing) {
             skipped++
             continue
           }
 
-          const result = await env.DB.prepare(
-            "INSERT OR IGNORE INTO attendees (eid, name, email, department, contact_number, family_emergency_contact_number, colleague_emergency_contact_number, project, project_lead, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Registered')"
-          ).bind(row.eid, row.name, row.email, row.project, row.contact, row.family, row.colleague, row.project, row.lead).run()
-
+          const result = await env.DB.prepare(`
+            INSERT OR IGNORE INTO attendees
+              (eid, name, email, department, contact_number,
+               family_emergency_contact_number, colleague_emergency_contact_number,
+               project, project_lead, status, registration_source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Registered', 'PRE_EVENT_IMPORT')
+          `).bind(
+            row.eid,
+            row.name,
+            row.email,
+            '', // Legacy NOT NULL database column; not exposed in the app.
+            row.contact || null,
+            row.family || null,
+            row.colleague || null,
+            row.project,
+            row.lead || null
+          ).run()
           if (result.meta.changes > 0) inserted++
           else skipped++
         }
 
-        return json({ ok: true, inserted, skipped, message: 'Import processed. No wristbands or check-ins were created.' })
+        await recordAudit(env, staff.id, 'PRE_EVENT_IMPORT_COMPLETED', null, null, `Inserted: ${inserted}; skipped: ${skipped}`)
+        return json({
+          ok: true,
+          inserted,
+          skipped,
+          message: 'Import processed using MyPMO as the source of truth for name, email, project, and project lead. No wristbands or check-ins were created.'
+        })
       } catch (error) {
-        console.error('Employee pre-registration import failed:', error)
-        return json({ error: 'Import failed while saving employee records. Check the attendee list before retrying.' }, 500)
+        console.error('Employee pre-registration import failed:', error instanceof Error ? error.message : 'Unknown error')
+        return json({ error: 'Import failed while saving employee records. Check the attendee list and MyPMO import before retrying.' }, 500)
       }
     }
     // MYPMO_ROUTES_END
@@ -705,7 +886,7 @@ export default {
 
       if (!canRegister(staff.role)) return json({ error: 'You do not have permission to view attendee records' }, 403)
 
-      try { const result = await env.DB.prepare('SELECT eid, name, email, department, contact_number, family_emergency_contact_number, colleague_emergency_contact_number, project, project_lead, status, created_at FROM attendees ORDER BY created_at DESC, name ASC').all<Attendee>(); return json({ ok: true, attendees: result.results }) }
+      try { const result = await env.DB.prepare('SELECT eid, name, email, contact_number, family_emergency_contact_number, colleague_emergency_contact_number, project, project_lead, status, created_at FROM attendees ORDER BY created_at DESC, name ASC').all<Attendee>(); return json({ ok: true, attendees: result.results }) }
 
       catch { return json({ error: 'Could not retrieve attendees' }, 500) }
 
@@ -727,8 +908,7 @@ export default {
 
       const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : ''
 
-      const project = typeof body.project === 'string' ? body.project.trim() : (typeof body.department === 'string' ? body.department.trim() : '')
-      const department = project
+      const project = typeof body.project === 'string' ? body.project.trim() : ''
       let contactNumber = typeof body.contact_number === 'string' ? body.contact_number.trim() : ''
       let emergencyContact = typeof body.family_emergency_contact_number === 'string' ? body.family_emergency_contact_number.trim() : ''
       let colleagueContact = typeof body.colleague_emergency_contact_number === 'string' ? body.colleague_emergency_contact_number.trim() : ''
@@ -739,7 +919,7 @@ export default {
 
       try {
 
-        if (request.method === 'POST') await env.DB.prepare('INSERT INTO attendees (eid, name, email, department, contact_number, family_emergency_contact_number, colleague_emergency_contact_number, project, project_lead, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(eid, name, email, department, contactNumber, emergencyContact, colleagueContact, project, projectLead, status as AttendeeStatus).run()
+        if (request.method === 'POST') await env.DB.prepare("INSERT INTO attendees (eid, name, email, department, contact_number, family_emergency_contact_number, colleague_emergency_contact_number, project, project_lead, status, registration_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'MANUAL')").bind(eid, name, email, '', contactNumber, emergencyContact, colleagueContact, project, projectLead, status as AttendeeStatus).run()
 
         else {
 
@@ -750,16 +930,25 @@ export default {
           if (typeof body.contact_number !== 'string') contactNumber = existing.contact_number || ''
           if (typeof body.family_emergency_contact_number !== 'string') emergencyContact = existing.family_emergency_contact_number || ''
           if (typeof body.colleague_emergency_contact_number !== 'string') colleagueContact = existing.colleague_emergency_contact_number || ''
-          if (typeof body.project !== 'string' && typeof body.department !== 'string') {
+          if (typeof body.project !== 'string') {
             // Keep the prior project when older clients send only the legacy edit fields.
           }
           if (typeof body.project_lead !== 'string') projectLead = existing.project_lead || ''
 
-          await env.DB.prepare('UPDATE attendees SET name = ?, email = ?, department = ?, contact_number = ?, family_emergency_contact_number = ?, colleague_emergency_contact_number = ?, project = ?, project_lead = ?, status = ? WHERE eid = ?').bind(name, email, department || existing.project || '', contactNumber, emergencyContact, colleagueContact, project || existing.project || '', projectLead, status as AttendeeStatus, eid).run()
+          await env.DB.prepare('UPDATE attendees SET name = ?, email = ?, contact_number = ?, family_emergency_contact_number = ?, colleague_emergency_contact_number = ?, project = ?, project_lead = ?, status = ? WHERE eid = ?').bind(name, email, contactNumber, emergencyContact, colleagueContact, project || existing.project || '', projectLead, status as AttendeeStatus, eid).run()
 
         }
 
-        const attendee = await env.DB.prepare('SELECT eid, name, email, department, contact_number, family_emergency_contact_number, colleague_emergency_contact_number, project, project_lead, status, created_at FROM attendees WHERE eid = ?').bind(eid).first<Attendee>()
+        await recordAudit(
+          env,
+          staff.id,
+          request.method === 'POST' ? 'ATTENDEE_CREATED' : 'ATTENDEE_UPDATED',
+          eid,
+          null,
+          request.method === 'POST' ? 'Manual attendee registration' : 'Attendee fields updated'
+        )
+
+        const attendee = await env.DB.prepare('SELECT eid, name, email, contact_number, family_emergency_contact_number, colleague_emergency_contact_number, project, project_lead, status, created_at FROM attendees WHERE eid = ?').bind(eid).first<Attendee>()
 
         return json({ ok: true, attendee }, request.method === 'POST' ? 201 : 200)
 
@@ -819,7 +1008,7 @@ export default {
 
         const rows = await env.DB.prepare(
 
-          `SELECT a.eid, a.name, a.email, a.department, a.status,
+          `SELECT a.eid, a.name, a.email, a.project, a.status,
 
                   w.qr_token, w.status AS band_status, c.checked_in_at
 
@@ -857,7 +1046,7 @@ export default {
 
       const body = await readJson(request); if (!isObject(body) || typeof body.eid !== 'string' || !body.eid.trim()) return json({ error: 'Employee ID is required' }, 400)
 
-      const eid = body.eid.trim(); const attendee = await env.DB.prepare("SELECT eid, name, email, department, status FROM attendees WHERE eid = ?").bind(eid).first<{ eid: string; name: string; email: string; department: string; status: AttendeeStatus }>()
+      const eid = body.eid.trim(); const attendee = await env.DB.prepare("SELECT eid, name, email, project, status FROM attendees WHERE eid = ?").bind(eid).first<{ eid: string; name: string; email: string; project: string; status: AttendeeStatus }>()
 
       if (!attendee) return json({ error: 'Attendee not found' }, 404)
 
@@ -893,9 +1082,9 @@ export default {
 
       const attendee = token
 
-        ? await env.DB.prepare("SELECT a.eid, a.name, a.email, a.department, a.status FROM wristbands w JOIN attendees a ON a.eid = w.attendee_eid WHERE w.qr_token = ? AND w.status = 'Assigned'").bind(token).first<{ eid: string; name: string; email: string; department: string; status: AttendeeStatus }>()
+        ? await env.DB.prepare("SELECT a.eid, a.name, a.email, a.project, a.status FROM wristbands w JOIN attendees a ON a.eid = w.attendee_eid WHERE w.qr_token = ? AND w.status = 'Assigned'").bind(token).first<{ eid: string; name: string; email: string; project: string; status: AttendeeStatus }>()
 
-        : await env.DB.prepare('SELECT eid, name, email, department, status FROM attendees WHERE eid = ?').bind(eidInput).first<{ eid: string; name: string; email: string; department: string; status: AttendeeStatus }>()
+        : await env.DB.prepare('SELECT eid, name, email, project, status FROM attendees WHERE eid = ?').bind(eidInput).first<{ eid: string; name: string; email: string; project: string; status: AttendeeStatus }>()
 
       if (!attendee) return json({ error: token ? 'QR wristband not found or no longer valid' : 'Attendee not found' }, 404)
 
@@ -912,6 +1101,7 @@ export default {
       catch { return json({ error: 'This attendee has already been checked in' }, 409) }
 
       const checked = await env.DB.prepare('SELECT checked_in_at FROM attendee_checkins WHERE attendee_eid = ?').bind(attendee.eid).first<{ checked_in_at: string }>()
+      await recordAudit(env, staff.id, 'ATTENDEE_CHECKED_IN', attendee.eid, null, token ? 'QR check-in' : 'Enterprise ID check-in')
 
       return json({ ok: true, attendee: { ...attendee, checked_in_at: checked?.checked_in_at ?? new Date().toISOString() } }, 201)
 
@@ -921,7 +1111,7 @@ export default {
 
       if (!canCheckin(staff.role) && staff.role !== 'viewer') return json({ error: 'You do not have permission to view check-ins' }, 403)
 
-      try { const result = await env.DB.prepare('SELECT c.attendee_eid AS eid, a.name, a.department, c.checked_in_at, c.checked_in_by, c.method FROM attendee_checkins c JOIN attendees a ON a.eid = c.attendee_eid ORDER BY c.checked_in_at DESC').all(); return json({ ok: true, checkins: result.results }) }
+      try { const result = await env.DB.prepare('SELECT c.attendee_eid AS eid, a.name, a.project, c.checked_in_at, c.checked_in_by, c.method FROM attendee_checkins c JOIN attendees a ON a.eid = c.attendee_eid ORDER BY c.checked_in_at DESC').all(); return json({ ok: true, checkins: result.results }) }
 
       catch { return json({ error: 'Could not load check-ins' }, 500) }
 

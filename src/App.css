@@ -2904,3 +2904,86 @@ textarea {
     grid-template-columns: minmax(0, 1fr) !important;
   }
 }
+
+
+/* Emergency scanner: prominent, responsive, read-only attendee lookup. */
+.cc-emergency-action {
+  border-color: #efb3b3;
+  background: linear-gradient(115deg, #fff7f7 0%, #ffffff 78%);
+}
+.cc-emergency-action:hover {
+  border-color: #d94141;
+  background: #fff1f1;
+}
+.cc-emergency-icon {
+  border-color: #f2b7b7;
+  background: #b91c1c;
+  color: #fff;
+  font-weight: 800;
+  font-size: 25px;
+}
+.cc-emergency-page h1 span { color: #b91c1c; }
+.cc-emergency-page .cc-inventory-panel { margin-top: 18px; }
+.cc-emergency-page #cc-emergency-qr-reader {
+  width: 100%;
+  max-width: 520px;
+  min-height: 20px;
+  margin: 0 auto 16px;
+  overflow: hidden;
+  border-radius: 12px;
+}
+.cc-emergency-page .cc-emergency-result { border-top: 4px solid #b91c1c; }
+.cc-emergency-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 20px;
+}
+.cc-emergency-details p {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  padding: 12px 0;
+  margin: 0;
+  border-bottom: 1px solid #e8edf5;
+}
+.cc-emergency-details p strong { color: #52627a; font-size: 12px; font-weight: 650; }
+.cc-emergency-details p span { color: #17243a; font-size: 15px; overflow-wrap: anywhere; }
+.cc-emergency-mypmo {
+  margin: 12px 0;
+  padding: 14px;
+  border: 1px solid #dce6f5;
+  border-radius: 10px;
+  background: #f8fbff;
+}
+.cc-emergency-mypmo p { margin: 5px 0; overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  .cc-emergency-details { grid-template-columns: minmax(0, 1fr); }
+  .cc-emergency-page .cc-scanner-controls { flex-wrap: wrap; }
+}
+
+/* Emergency Scanner — high-contrast text correction */
+.cc-emergency-page .cc-emergency-result,
+.cc-emergency-page .cc-emergency-result p,
+.cc-emergency-page .cc-emergency-result div {
+  color: #f3f6fc !important;
+}
+.cc-emergency-page .cc-emergency-details p {
+  border-bottom-color: rgba(220, 230, 245, 0.24) !important;
+}
+.cc-emergency-page .cc-emergency-details p strong {
+  color: #c5d2e8 !important;
+}
+.cc-emergency-page .cc-emergency-details p span {
+  color: #ffffff !important;
+}
+.cc-emergency-page .cc-emergency-mypmo {
+  background: #f8fbff !important;
+  color: #17243a !important;
+  border-color: #dce6f5 !important;
+}
+.cc-emergency-page .cc-emergency-mypmo p,
+.cc-emergency-page .cc-emergency-mypmo strong,
+.cc-emergency-page .cc-emergency-mypmo span {
+  color: #17243a !important;
+}
