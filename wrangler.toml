@@ -1,4 +1,4 @@
-
+﻿
 name = "champion-celebration-demo"
 main = "worker/index.ts"
 compatibility_date = "2026-10-19"
@@ -30,3 +30,4 @@ enabled = false
 
 [vars]
 LOCAL_DEVELOPMENT = "false"
+

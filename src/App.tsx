@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 
 import QRCode from 'qrcode'
 import * as XLSX from 'xlsx'
@@ -35,19 +35,27 @@ type Attendee = {
 
   email: string
 
-  project?: string | null
+  department: string
   contact_number?: string | null
   family_emergency_contact_number?: string | null
   colleague_emergency_contact_number?: string | null
+  project?: string | null
   project_lead?: string | null
+  residential_address?: string | null
+  colleague_enterprise_id?: string | null
+  family_emergency_contact_name?: string | null
+  family_emergency_contact_relation?: string | null
+  mypmo_available?: number
   status: 'Registered' | 'Pending' | 'Cancelled'
 
 }
 
+function canManageRegistration(staff: Staff | null) {
+  const id = (staff?.staffId ?? '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '')
+  return staff?.role === 'admin' || ['NEELIMA', 'ANIRUDDHA'].includes(id)
+}
 type RegistrationFilter = 'All' | Attendee['status']
 type MyPmoEmployee = {
-  roster_type?: 'ASPIRE' | 'IX'
-  resource_status?: string | null
   enterprise_id: string
   full_name: string
   email: string
@@ -56,92 +64,23 @@ type MyPmoEmployee = {
   project_lead: string | null
 }
 
-type EmergencyLookupResult = {
-  found?: boolean
-  registered?: boolean
-  error?: string
-  message?: string
-  attendee?: {
-    eid?: string | null; name?: string | null; email?: string | null
-    contact_number?: string | null; family_emergency_contact_number?: string | null
-    colleague_emergency_contact_number?: string | null; project?: string | null
-    project_lead?: string | null; status?: string | null; registration_source?: string | null
-    checked_in_at?: string | null
-  } | null
-  band?: { serial?: string | null; status?: string | null; assigned_at?: string | null; checked_in_at?: string | null } | null
-  mypmo?: Array<{ roster_type?: string; enterprise_id?: string; full_name?: string; email?: string; project?: string | null; project_lead?: string | null; resource_status?: string | null }>
-}
-type Wristband = { eid: string; name: string; email: string; project: string; status: Attendee['status']; qr_token: string; band_status: string; checked_in_at?: string | null }
+type Wristband = { eid: string; name: string; email: string; department: string; status: Attendee['status']; qr_token: string; band_status: string; checked_in_at?: string | null }
 
-type CheckinResult = { ok?: boolean; error?: string; attendee?: { eid: string; name: string; email: string; project: string; status: Attendee['status']; checked_in_at: string } }
-
-type OperationsAssignment = {
-  action?: string | null
-  attendee_name?: string | null
-  eid?: string | null
-  serial?: string | null
-  staff_id?: string | null
-  performed_at?: string | null
-}
-
-type OperationsCheckin = {
-  attendee_name?: string | null
-  eid?: string | null
-  serial?: string | null
-  method?: string | null
-  staff_id?: string | null
-  checked_in_at?: string | null
-}
-
-type OperationsAwaitingCheckin = {
-  attendee_name?: string | null
-  eid?: string | null
-  serial?: string | null
-  assigned_at?: string | null
-}
-
-type OperationsDashboard = {
-  generatedAt?: string | null
-  counts: {
-    preEventRegistrations?: number
-    liveRegistrations?: number
-    registeredAttendees?: number
-    totalCheckins?: number
-    availableBands?: number
-    assignedBands?: number
-    checkedInBands?: number
-    revokedBands?: number
-    attendeesWithoutBands?: number
-    pendingAttendees?: number
-  }
-  assignments?: OperationsAssignment[]
-  checkins?: OperationsCheckin[]
-  awaitingCheckin?: OperationsAwaitingCheckin[]
-  error?: string
-}
+type CheckinResult = { ok?: boolean; error?: string; attendee?: { eid: string; name: string; email: string; department: string; status: Attendee['status']; checked_in_at: string } }
 
 const initialDemoAttendees: Attendee[] = []
 
-function formatIndiaDateTime(value?: string | null): string {
+function formatIndiaDateTime(value: string | null | undefined): string {
   if (!value) return '—'
-
-  // SQLite CURRENT_TIMESTAMP is UTC but may not include a timezone suffix.
-  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(value)
     ? `${value.replace(' ', 'T')}Z`
     : value
   const date = new Date(normalized)
   if (Number.isNaN(date.getTime())) return value
-
-  return new Intl.DateTimeFormat('en-IN', {
-    timeZone: 'Asia/Kolkata',
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: true
-  }).format(date)
+  return date.toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true,
+  })
 }
 
 function App() {
@@ -159,17 +98,129 @@ function App() {
   const [signedInStaff, setSignedInStaff] = useState<Staff | null>(null)
 
   const [activePage, setActivePage] = useState('home')
-  const [operationsDashboard, setOperationsDashboard] = useState<OperationsDashboard | null>(null)
+  const [emergencyQuery, setEmergencyQuery] = useState('')
+  const [emergencyMode, setEmergencyMode] = useState<'eid' | 'serial'>('eid')
+  const [emergencyResults, setEmergencyResults] = useState<any[]>([])
+  const [emergencyError, setEmergencyError] = useState('')
+  const [emergencyBusy, setEmergencyBusy] = useState(false)
+  const [emergencyScannerRunning, setEmergencyScannerRunning] = useState(false)
+  const emergencyScannerRef = useRef<Html5Qrcode | null>(null)
+
+  async function lookupEmergencyContacts(value: string, mode: 'eid' | 'qr' | 'serial') {
+    const response = await fetch(
+      `/api/emergency-lookup?q=${encodeURIComponent(value)}&mode=${mode}`,
+      { credentials: 'same-origin' }
+    )
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || 'Emergency lookup failed.')
+    return Array.isArray(data.attendees) ? data.attendees : []
+  }
+
+  async function searchEmergencyContacts() {
+    const query = emergencyQuery.trim()
+    if (query.length < 1) {
+      setEmergencyError('Enter an employee ID or wristband serial number.')
+      setEmergencyResults([])
+      return
+    }
+
+    setEmergencyBusy(true)
+    setEmergencyError('')
+    setEmergencyResults([])
+
+    try {
+      const results = await lookupEmergencyContacts(query, emergencyMode)
+      setEmergencyResults(results)
+      if (!results.length) setEmergencyError('No matching active attendee found.')
+    } catch (error) {
+      setEmergencyError(error instanceof Error ? error.message : 'Emergency lookup failed.')
+    } finally {
+      setEmergencyBusy(false)
+    }
+  }
+
+  async function stopEmergencyQrScanner() {
+    const scanner = emergencyScannerRef.current
+    if (!scanner) {
+      setEmergencyScannerRunning(false)
+      return
+    }
+
+    try {
+      if (scanner.isScanning) await scanner.stop()
+    } catch (error) {
+      console.error('Could not stop emergency QR scanner:', error)
+    } finally {
+      emergencyScannerRef.current = null
+      setEmergencyScannerRunning(false)
+    }
+  }
+
+  async function startEmergencyQrScanner() {
+    setEmergencyError('')
+    setEmergencyResults([])
+
+    if (emergencyScannerRef.current) return
+
+    const scanner = new Html5Qrcode('cc-emergency-qr-reader')
+    emergencyScannerRef.current = scanner
+
+    try {
+      await scanner.start(
+        { facingMode: 'environment' },
+        { fps: 10, qrbox: { width: 230, height: 230 } },
+        async (decodedText) => {
+          await stopEmergencyQrScanner()
+          setEmergencyBusy(true)
+          setEmergencyError('')
+          setEmergencyResults([])
+
+          try {
+            let results = await lookupEmergencyContacts(decodedText.trim(), 'qr')
+
+            if (!results.length) {
+              results = await lookupEmergencyContacts(decodedText.trim(), 'serial')
+            }
+
+            setEmergencyResults(results)
+            if (!results.length) {
+              setEmergencyError('No attendee matched this QR code or wristband serial.')
+            }
+          } catch (error) {
+            setEmergencyError(error instanceof Error ? error.message : 'Emergency lookup failed.')
+          } finally {
+            setEmergencyBusy(false)
+          }
+        },
+        () => undefined
+      )
+
+      setEmergencyScannerRunning(true)
+    } catch (error) {
+      emergencyScannerRef.current = null
+      setEmergencyScannerRunning(false)
+      setEmergencyError(error instanceof Error ? error.message : 'Camera could not start. Check camera permissions.')
+    }
+  }
+  const [operationsDashboard, setOperationsDashboard] = useState<any>(null)
   const [operationsDashboardError, setOperationsDashboardError] = useState('')
   const [operationsDashboardBusy, setOperationsDashboardBusy] = useState(false)
   const [operationsDashboardSearch, setOperationsDashboardSearch] = useState('')
-
-  const loadOperationsDashboard = useCallback(async () => {
+  // operations dashboard auto-refresh
+  useEffect(() => {
+    if (signedInStaff?.role !== 'admin' || activePage !== 'operations') return
+    void loadOperationsDashboard()
+    const timer = window.setInterval(() => {
+      void loadOperationsDashboard()
+    }, 5000)
+    return () => window.clearInterval(timer)
+  }, [signedInStaff, activePage])
+  async function loadOperationsDashboard() {
     if (signedInStaff?.role !== 'admin') return
     setOperationsDashboardBusy(true)
     try {
       const response = await fetch('/api/admin/operations-dashboard', { credentials: 'same-origin' })
-      const data = await response.json() as OperationsDashboard & { error?: string }
+      const data = await response.json()
       if (!response.ok) throw new Error(data.error || 'Could not load operations dashboard')
       setOperationsDashboard(data)
       setOperationsDashboardError('')
@@ -178,53 +229,29 @@ function App() {
     } finally {
       setOperationsDashboardBusy(false)
     }
-  }, [signedInStaff?.role])
-
-  const downloadAuditLogs = useCallback(async () => {
-    if (signedInStaff?.role !== 'admin') return
-    try {
-      const response = await fetch('/api/admin/audit-logs', { credentials: 'same-origin' })
-      if (!response.ok) {
-        let errorMessage = 'Could not download audit logs'
-        try {
-          const data = await response.json() as { error?: string }
-          if (data.error) errorMessage = data.error
-        } catch {
-          // Keep the generic error if the server did not return JSON.
-        }
-        throw new Error(errorMessage)
-      }
-      const blob = await response.blob()
-      const objectUrl = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = objectUrl
-      link.download = 'champion-celebration-audit-logs.csv'
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
-    } catch (error) {
-      setOperationsDashboardError(error instanceof Error ? error.message : 'Could not download audit logs')
-    }
-  }, [signedInStaff?.role])
-
-  // Refresh the admin operations dashboard while it is visible.
-  useEffect(() => {
-    if (signedInStaff?.role !== 'admin' || activePage !== 'operations') return
-    // Defer the initial refresh until after the effect completes.
-    const initialRefresh = window.setTimeout(() => {
-      void loadOperationsDashboard()
-    }, 0)
-    const timer = window.setInterval(() => {
-      void loadOperationsDashboard()
-    }, 5000)
-    return () => {
-      window.clearTimeout(initialRefresh)
-      window.clearInterval(timer)
-    }
-  }, [signedInStaff?.role, activePage, loadOperationsDashboard])
+  }
+  function downloadOperationsCsv() {
+    if (!operationsDashboard) return
+    const columns = ['Record Type', 'Action', 'Attendee', 'Enterprise ID', 'Band Serial', 'Method', 'Staff ID', 'Timestamp']
+    const rows: unknown[][] = [columns]
+    for (const item of operationsDashboard.assignments || []) rows.push(['Band Assignment', item.action, item.attendee_name, item.eid, item.serial, '', item.staff_id, item.performed_at])
+    for (const item of operationsDashboard.checkins || []) rows.push(['Successful Check-in', 'Check-in', item.attendee_name, item.eid, item.serial, item.method, item.staff_id, item.checked_in_at])
+    for (const item of operationsDashboard.awaitingCheckin || []) rows.push(['Awaiting Check-in', 'Assigned', item.attendee_name, item.eid, item.serial, '', '', item.assigned_at])
+    const csv = rows.map(row => row.map(value => {
+      const cell = String(value ?? '').replace(/\r?\n/g, ' ')
+      return `"${cell.replace(/"/g, '""')}"`
+    }).join(',')).join('\r\n')
+    const blob = new Blob(['\uFEFF', csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `champion-celebration-operations-${new Date().toISOString().slice(0, 10)}.csv`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+  }
   const [mypmoFile, setMypmoFile] = useState<File | null>(null)
-  const [mypmoRoster, setMypmoRoster] = useState<'ASPIRE' | 'IX'>('ASPIRE')
   const [mypmoUploadBusy, setMypmoUploadBusy] = useState(false)
   const [mypmoUploadMessage, setMypmoUploadMessage] = useState('')
   const [mypmoUploadError, setMypmoUploadError] = useState('')
@@ -235,9 +262,9 @@ function App() {
   const [mypmoEmployee, setMypmoEmployee] = useState<MyPmoEmployee | null>(null)
   type EmployeeImportRow = {
     eid: string
-    roster_type: '' | 'ASPIRE' | 'IX'
     name: string
     email: string
+    department: string
     contact_number: string
     family_emergency_contact_number: string
     colleague_emergency_contact_number: string
@@ -261,67 +288,30 @@ function App() {
     setEmployeeImportMessage('Importing employee records...')
 
     try {
-      const attendees = validRows.map((row) => ({
-        eid: row.eid,
-        roster_type: row.roster_type || undefined,
-        name: row.name,
-        email: row.email,
-        project: row.project,
-        contact_number: row.contact_number,
-        family_emergency_contact_number: row.family_emergency_contact_number,
-        colleague_emergency_contact_number: row.colleague_emergency_contact_number,
-        project_lead: row.project_lead,
-      }))
-      const approvedMissingEids: string[] = []
-      let response: Response
-      let result: {
+      const response = await fetch('/api/admin/employee-prereg/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          attendees: validRows.map((row) => ({
+            eid: row.eid,
+            name: row.name,
+            email: row.email,
+            department: row.department,
+            project: row.project,
+            contact_number: row.contact_number,
+            family_emergency_contact_number: row.family_emergency_contact_number,
+            colleague_emergency_contact_number: row.colleague_emergency_contact_number,
+            project_lead: row.project_lead,
+          })),
+        }),
+      })
+
+      const result = await response.json() as {
         ok?: boolean
         error?: string
         inserted?: number
         skipped?: number
-        missingEmployees?: Array<{ eid: string; name?: string; email?: string; project?: string; roster_type?: string }>
-      }
-
-      // First request validates the whole batch and reports MyPMO misses without inserting anything.
-      response = await fetch('/api/admin/employee-prereg/import', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ attendees, approvedMissingEids }),
-      })
-      result = await response.json() as typeof result
-
-      if (response.status === 409 && Array.isArray(result.missingEmployees)) {
-        const missing = result.missingEmployees
-        const rejected = new Set<string>()
-        for (const employee of missing) {
-          const displayName = employee.name?.trim() || employee.eid
-          const displayEmail = employee.email?.trim() || '(no email provided)'
-          const displayProject = employee.project?.trim() || '(no project provided)'
-          const allow = window.confirm(
-            `${displayName} (${displayEmail}) was not found in MyPMO${employee.roster_type ? ` in the ${employee.roster_type} roster` : ''}.\n\nProject: ${displayProject}\n\nDo you want to import this employee using the Microsoft Forms spreadsheet details?`
-          )
-          if (allow) approvedMissingEids.push(employee.eid.toLowerCase())
-          else rejected.add(employee.eid.toLowerCase())
-        }
-
-        const approvedAttendees = attendees.filter((row) => !rejected.has(row.eid.toLowerCase()))
-        if (approvedAttendees.length === 0) {
-          setEmployeeImportMessage('Import cancelled: all employees missing from MyPMO were skipped. No records were imported.')
-          setEmployeeImportConfirmed(false)
-          return
-        }
-
-        response = await fetch('/api/admin/employee-prereg/import', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'same-origin',
-          body: JSON.stringify({
-            attendees: approvedAttendees,
-            approvedMissingEids: approvedMissingEids.filter((eid) => !rejected.has(eid)),
-          }),
-        })
-        result = await response.json() as typeof result
       }
 
       if (!response.ok || !result.ok) {
@@ -399,11 +389,9 @@ function App() {
           }
 
           const eid = pick(['eid', 'employeeid', 'enterpriseid', 'employeeidnumber'])
-          const rosterRaw = pick(['rostertype', 'roster', 'mypmoroster']).toUpperCase()
-          const roster_type: '' | 'ASPIRE' | 'IX' = rosterRaw === 'ASPIRE' || rosterRaw === 'IX' ? rosterRaw : ''
           const name = pick(['name', 'fullname', 'employeename', 'respondentname'])
           const email = pick(['email', 'emailaddress', 'workemail', 'officialemail'])
-          const project = pick(['project', 'projectname'])
+          const project = pick(['project', 'projectname', 'department', 'businessunit'])
           const contact = pick(['contactnumber', 'phonenumber', 'mobile', 'mobilenumber', 'phone'])
           const familyEmergency = pick([
             'familyemergencycontactnumber',
@@ -418,7 +406,6 @@ function App() {
           const projectLead = pick(['projectlead', 'projectmanager', 'leadname'])
 
           const issues: string[] = []
-          if (rosterRaw && rosterRaw !== 'ASPIRE' && rosterRaw !== 'IX') issues.push('Roster must be ASPIRE or IX')
           const normalizedEid = eid.toLowerCase()
           const normalizedEmail = email.toLowerCase()
 
@@ -429,7 +416,7 @@ function App() {
           } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
             issues.push('Invalid email')
           }
-          if (!project) issues.push('Missing project')
+          if (!project) issues.push('Missing project/department')
 
           if (eid && usedEids.has(normalizedEid)) issues.push('Duplicate Employee ID in file')
           if (email && usedEmails.has(normalizedEmail)) issues.push('Duplicate email in file')
@@ -439,9 +426,9 @@ function App() {
 
           return {
             eid,
-            roster_type,
             name,
             email,
+            department: project,
             contact_number: contact,
             family_emergency_contact_number: familyEmergency,
             colleague_emergency_contact_number: colleagueEmergency,
@@ -498,11 +485,15 @@ function App() {
 
   const [editEmail, setEditEmail] = useState('')
 
-  const [editProject, setEditProject] = useState('')
+  const [editDepartment, setEditDepartment] = useState('')
   const [editContactNumber, setEditContactNumber] = useState('')
   const [editFamilyEmergency, setEditFamilyEmergency] = useState('')
   const [editColleagueEmergency, setEditColleagueEmergency] = useState('')
   const [editPeopleLead, setEditPeopleLead] = useState('')
+  const [editResidentialAddress, setEditResidentialAddress] = useState('')
+  const [editColleagueEnterpriseId, setEditColleagueEnterpriseId] = useState('')
+  const [editFamilyContactName, setEditFamilyContactName] = useState('')
+  const [editFamilyContactRelation, setEditFamilyContactRelation] = useState('')
 
   const [editStatus, setEditStatus] = useState<Attendee['status']>('Registered')
 
@@ -523,6 +514,27 @@ function App() {
   const [newPeopleLead, setNewPeopleLead] = useState('')
   const [attendeeLookupMessage, setAttendeeLookupMessage] = useState('')
   const [attendeeLookupBusy, setAttendeeLookupBusy] = useState(false)
+  // Public employee registration
+  const [showPublicRegistration] = useState(() => new URLSearchParams(window.location.search).get('register') === '1')
+  const [publicEid, setPublicEid] = useState('')
+  const [publicName, setPublicName] = useState('')
+  const [publicEmail, setPublicEmail] = useState('')
+  const [publicProject, setPublicProject] = useState('')
+  const [publicProjectLead, setPublicProjectLead] = useState('')
+  const [publicContact, setPublicContact] = useState('')
+  const [publicEmergencyContact, setPublicEmergencyContact] = useState('')
+  const [publicColleagueContact, setPublicColleagueContact] = useState('')
+  const [publicResidentialAddress, setPublicResidentialAddress] = useState('')
+  const [publicColleagueEnterpriseId, setPublicColleagueEnterpriseId] = useState('')
+  const [publicFamilyContactName, setPublicFamilyContactName] = useState('')
+  const [publicFamilyContactRelation, setPublicFamilyContactRelation] = useState('')
+  const [publicError, setPublicError] = useState('')
+  const [publicSubmitting, setPublicSubmitting] = useState(false)
+  const [publicSubmitted, setPublicSubmitted] = useState(false)
+  // Pending registration approval
+  const [approvalBusyEid, setApprovalBusyEid] = useState('')
+  const [approvalMessage, setApprovalMessage] = useState('')
+  const [approvalError, setApprovalError] = useState('')
 
   const [wristbands, setWristbands] = useState<Wristband[]>([])
 
@@ -541,16 +553,127 @@ function App() {
   const [scannerRunning, setScannerRunning] = useState(false)
 
   const scannerRef = useRef<Html5Qrcode | null>(null)
-  const emergencyScannerRef = useRef<Html5Qrcode | null>(null)
-  const [emergencyQuery, setEmergencyQuery] = useState('')
-  const [emergencyBusy, setEmergencyBusy] = useState(false)
-  const [emergencyScannerRunning, setEmergencyScannerRunning] = useState(false)
-  const [emergencyError, setEmergencyError] = useState('')
-  const [emergencyMessage, setEmergencyMessage] = useState('')
-  const [emergencyResult, setEmergencyResult] = useState<EmergencyLookupResult | null>(null)
 
   const [checkedInAttendee, setCheckedInAttendee] = useState<CheckinResult['attendee'] | null>(null)
 
+  async function submitPublicRegistration(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (publicSubmitting) return
+
+    setPublicError('')
+
+    if (!publicEid.trim() || !publicName.trim() || !publicProject.trim()) {
+      setPublicError('Enterprise ID, full name and project are required.')
+      return
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(publicEmail.trim())) {
+      setPublicError('Enter a valid email address.')
+      return
+    }
+
+    if (
+      !/^\d{10}$/.test(publicContact.trim()) ||
+      !/^\d{10}$/.test(publicEmergencyContact.trim()) ||
+      !/^\d{10}$/.test(publicColleagueContact.trim())
+    ) {
+      setPublicError('All contact numbers must contain exactly 10 digits.')
+      return
+    }
+
+    setPublicSubmitting(true)
+    try {
+      const response = await fetch('/api/public-registration/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          eid: publicEid.trim(),
+          name: publicName.trim(),
+          email: publicEmail.trim().toLowerCase(),
+          project: publicProject.trim(),
+          project_lead: publicProjectLead.trim(),
+          contact_number: publicContact.trim(),
+          family_emergency_contact_number: publicEmergencyContact.trim(),
+          colleague_emergency_contact_number: publicColleagueContact.trim(),
+          residential_address: publicResidentialAddress.trim(),
+          colleague_enterprise_id: publicColleagueEnterpriseId.trim(),
+          family_emergency_contact_name: publicFamilyContactName.trim(),
+          family_emergency_contact_relation: publicFamilyContactRelation.trim(),
+        }),
+      })
+
+      const result = await response.json() as { ok?: boolean; message?: string; error?: string }
+      if (!response.ok || !result.ok) {
+        throw new Error(result.error || 'Registration could not be submitted.')
+      }
+
+      setPublicSubmitted(true)
+      setPublicError('')
+    } catch (error) {
+      setPublicError(error instanceof Error ? error.message : 'Registration submission failed.')
+    } finally {
+      setPublicSubmitting(false)
+    }
+  }
+  async function rejectPendingRegistration(eid: string) {
+    const attendee = attendees.find((item) => item.eid === eid)
+    if (!attendee || attendee.status !== 'Pending') return
+    if (!window.confirm(`Don't allow the registration for ${attendee.name} (${eid})?`)) return
+    setApprovalBusyEid(eid)
+    setApprovalError('')
+    setApprovalMessage('')
+    try {
+      const response = await fetch('/api/registration/reject', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ eid }),
+      })
+      const result = await response.json() as { ok?: boolean; error?: string; message?: string }
+      if (!response.ok || !result.ok) throw new Error(result.error || 'Could not reject registration.')
+      setAttendees((current) => current.map((item) => item.eid === eid ? { ...item, status: 'Cancelled' } : item))
+      setApprovalMessage(`${attendee.name}'s registration was marked as not allowed.`)
+    } catch (error) {
+      setApprovalError(error instanceof Error ? error.message : 'Rejection failed.')
+    } finally {
+      setApprovalBusyEid('')
+    }
+  }
+
+  async function approvePendingRegistration(eid: string) {
+    setApprovalBusyEid(eid)
+    setApprovalError('')
+    setApprovalMessage('')
+
+    try {
+      const response = await fetch('/api/registration/approve', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ eid }),
+      })
+
+      const result = await response.json() as {
+        ok?: boolean
+        attendee?: Attendee
+        message?: string
+        error?: string
+      }
+
+      if (!response.ok || !result.ok) {
+        throw new Error(result.error || 'Could not approve registration.')
+      }
+
+      setAttendees((current) => current.map((attendee) =>
+        attendee.eid === eid ? { ...attendee, status: 'Registered' } : attendee
+      ))
+      setApprovalMessage(`${eid} approved. Registration status is now Registered.`)
+    } catch (error) {
+      setApprovalError(error instanceof Error ? error.message : 'Approval failed.')
+    } finally {
+      setApprovalBusyEid('')
+    }
+  }
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
 
     event.preventDefault()
@@ -630,40 +753,34 @@ function App() {
   async function handleAttendeeEidLookup(value: string) {
     const eid = value.trim()
     setAttendeeLookupMessage('')
+
     if (!eid) return
+
     setAttendeeLookupBusy(true)
     try {
-      const fetchLookup = async (roster?: string) => {
-        const suffix = roster ? `&roster=${roster}` : ''
-        const response = await fetch(`/api/mypmo/lookup?eid=${encodeURIComponent(eid)}${suffix}`, {
-          credentials: 'same-origin', headers: { Accept: 'application/json' },
-        })
-        return { response, result: await response.json() as {
-          found?: boolean; ambiguous?: boolean; employee?: MyPmoEmployee
-          matches?: MyPmoEmployee[]; message?: string; error?: string
-        } }
+      const response = await fetch(
+        `/api/mypmo/lookup?eid=${encodeURIComponent(eid)}`,
+        { credentials: 'same-origin', headers: { Accept: 'application/json' } },
+      )
+      const result = await response.json() as {
+        found?: boolean
+        employee?: MyPmoEmployee
+        message?: string
+        error?: string
       }
-      let { response, result } = await fetchLookup()
-      if (result.ambiguous && result.matches?.length) {
-        const choice = window.prompt('This Enterprise ID exists in both MyPMO rosters. Type ASPIRE or IX to choose the correct roster.')
-        const roster = choice?.trim().toUpperCase()
-        if (roster !== 'ASPIRE' && roster !== 'IX') {
-          setAttendeeLookupMessage('Both Aspire and IX records exist. Lookup cancelled; choose ASPIRE or IX when prompted.')
-          return
-        }
-        ;({ response, result } = await fetchLookup(roster))
-      }
+
       if (!response.ok || !result.found || !result.employee) {
         setAttendeeLookupMessage(result.message || 'Enterprise ID not found in MyPMO. Enter the details manually.')
         return
       }
+
       setNewEid(result.employee.enterprise_id)
       setNewName(result.employee.full_name)
       setNewEmail(result.employee.email)
       setNewProject(result.employee.project || '')
-      setNewContactNumber('')
+      setNewContactNumber(result.employee.contact_number || '')
       setNewPeopleLead(result.employee.project_lead || '')
-      setAttendeeLookupMessage(`Employee details filled from ${result.employee.roster_type === 'IX' ? 'Roche IX' : 'Roche Aspire'} MyPMO. Please verify before saving.`)
+      setAttendeeLookupMessage('Employee details filled from MyPMO. Please verify before saving.')
     } catch {
       setAttendeeLookupMessage('Could not reach MyPMO. You can enter the details manually.')
     } finally {
@@ -738,7 +855,7 @@ function App() {
 
         credentials: 'same-origin',
 
-        body: JSON.stringify({ eid, name, email, project, contact_number: contactNumber, family_emergency_contact_number: emergencyContact, colleague_emergency_contact_number: colleagueContact, project_lead: peopleLead, status: 'Registered' }),
+        body: JSON.stringify({ eid, name, email, department: project, project, contact_number: contactNumber, family_emergency_contact_number: emergencyContact, colleague_emergency_contact_number: colleagueContact, project_lead: peopleLead, status: 'Registered' }),
 
       })
 
@@ -806,11 +923,15 @@ function App() {
 
     setEditEmail(attendee.email)
 
-    setEditProject(attendee.project || '')
+    setEditDepartment(attendee.department)
     setEditContactNumber(attendee.contact_number ?? '')
     setEditFamilyEmergency(attendee.family_emergency_contact_number ?? '')
     setEditColleagueEmergency(attendee.colleague_emergency_contact_number ?? '')
     setEditPeopleLead(attendee.project_lead ?? '')
+    setEditResidentialAddress(attendee.residential_address ?? '')
+    setEditColleagueEnterpriseId(attendee.colleague_enterprise_id ?? '')
+    setEditFamilyContactName(attendee.family_emergency_contact_name ?? '')
+    setEditFamilyContactRelation(attendee.family_emergency_contact_relation ?? '')
 
     setEditStatus(attendee.status)
 
@@ -830,11 +951,15 @@ function App() {
 
     setEditEmail('')
 
-    setEditProject('')
+    setEditDepartment('')
     setEditContactNumber('')
     setEditFamilyEmergency('')
     setEditColleagueEmergency('')
     setEditPeopleLead('')
+    setEditResidentialAddress('')
+    setEditColleagueEnterpriseId('')
+    setEditFamilyContactName('')
+    setEditFamilyContactRelation('')
 
     setEditStatus('Registered')
 
@@ -856,11 +981,11 @@ function App() {
 
     const email = editEmail.trim().toLowerCase()
 
-    const project = editProject.trim()
+    const department = editDepartment.trim()
 
     const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
-    if (!name || !email || !project) {
+    if (!name || !email || !department) {
 
       setAttendeeFormError('Please complete all fields.')
 
@@ -910,11 +1035,16 @@ function App() {
 
           email,
 
-          project,
+          department,
+          project: department,
           contact_number: editContactNumber.trim(),
           family_emergency_contact_number: editFamilyEmergency.trim(),
           colleague_emergency_contact_number: editColleagueEmergency.trim(),
           project_lead: editPeopleLead.trim(),
+          residential_address: editResidentialAddress.trim(),
+          colleague_enterprise_id: editColleagueEnterpriseId.trim(),
+          family_emergency_contact_name: editFamilyContactName.trim(),
+          family_emergency_contact_relation: editFamilyContactRelation.trim(),
 
           status: editStatus,
 
@@ -1081,14 +1211,14 @@ function App() {
   }, [])
 
   useEffect(() => {
-  if (!signedInStaff) return
+  if (!signedInStaff || showPublicRegistration) return
 
   const timeoutId = window.setTimeout(() => {
     void loadAttendees()
   }, 0)
 
   return () => window.clearTimeout(timeoutId)
-}, [signedInStaff])
+}, [signedInStaff, showPublicRegistration])
 
   async function handleSignOut() {
     setMessage('')
@@ -1204,58 +1334,6 @@ function App() {
 
     } catch (error) { setCheckinError(error instanceof Error ? error.message : 'Could not create QR wristband.') }
 
-  }
-
-  async function stopEmergencyScanner() {
-    const scanner = emergencyScannerRef.current
-    if (!scanner) { setEmergencyScannerRunning(false); return }
-    try { if (scanner.isScanning) await scanner.stop() }
-    catch (error) { console.error('Could not stop emergency scanner:', error) }
-    finally { emergencyScannerRef.current = null; setEmergencyScannerRunning(false) }
-  }
-
-  async function lookupEmergencyDetails(value = emergencyQuery) {
-    const query = value.trim()
-    if (!query || emergencyBusy) return
-    setEmergencyBusy(true)
-    setEmergencyError('')
-    setEmergencyMessage('')
-    setEmergencyResult(null)
-    try {
-      const response = await fetch(`/api/emergency/lookup?q=${encodeURIComponent(query)}`, { credentials: 'same-origin' })
-      const result = await response.json() as EmergencyLookupResult
-      if (!response.ok || !result.found) throw new Error(result.error || 'No matching attendee found.')
-      setEmergencyResult(result)
-      setEmergencyMessage(result.message || 'Lookup complete. No event data was changed.')
-      setEmergencyQuery(query)
-    } catch (error) {
-      setEmergencyError(error instanceof Error ? error.message : 'Could not retrieve attendee details.')
-    } finally { setEmergencyBusy(false) }
-  }
-
-  async function startEmergencyScanner() {
-    setEmergencyError('')
-    setEmergencyMessage('')
-    if (emergencyScannerRef.current) return
-    const scanner = new Html5Qrcode('cc-emergency-qr-reader')
-    emergencyScannerRef.current = scanner
-    try {
-      await scanner.start(
-        { facingMode: 'environment' },
-        { fps: 10, qrbox: { width: 230, height: 230 } },
-        async (decodedText) => {
-          await stopEmergencyScanner()
-          setEmergencyQuery(decodedText)
-          await lookupEmergencyDetails(decodedText)
-        },
-        () => undefined
-      )
-      setEmergencyScannerRunning(true)
-    } catch (error) {
-      emergencyScannerRef.current = null
-      setEmergencyScannerRunning(false)
-      setEmergencyError(error instanceof Error ? error.message : 'Camera could not start. Enter the band number manually.')
-    }
   }
 
   async function submitCheckin(value = checkinInput, method: 'QR' | 'EID' = 'EID') {
@@ -1408,6 +1486,28 @@ function App() {
 
   }
 
+  function printPublicRegistrationQr() {
+    const printWindow = window.open('', '_blank', 'width=680,height=760')
+    if (!printWindow) {
+      setApprovalError('Allow pop-ups for this site, then click Print registration QR again.')
+      return
+    }
+
+    setApprovalError('')
+    const registrationUrl = `${window.location.origin}/?register=1`
+    void QRCode.toDataURL(registrationUrl, { width: 420, margin: 2, errorCorrectionLevel: 'H' })
+      .then((dataUrl) => {
+        const safeUrl = registrationUrl.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+        printWindow.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Champion Celebration - Employee Registration QR</title><style>body{font-family:Arial,sans-serif;text-align:center;padding:36px;color:#17243a}h1{font-size:28px;margin:12px 0}p{font-size:16px;line-height:1.5}img{width:340px;height:340px;max-width:80vw}.url{font-size:12px;overflow-wrap:anywhere;color:#52627a;margin-top:18px}.instruction{font-weight:700;margin-top:26px}@media print{button{display:none}@page{size:A4;margin:18mm}}</style></head><body><p>CHAMPION CELEBRATION</p><h1>Employee Live Registration</h1><p>Scan this QR code using your mobile phone to complete the event registration form.</p><img src="${dataUrl}" alt="Public employee registration QR code"><p class="instruction">Please complete all details accurately.</p><p class="url">${safeUrl}</p><button onclick="window.print()">Print QR</button><script>window.onload=()=>window.print()</script></body></html>`)
+        printWindow.document.close()
+        printWindow.focus()
+      })
+      .catch(() => {
+        printWindow.close()
+        setApprovalError('Could not generate the public registration QR code.')
+      })
+  }
+
   const filteredAttendees = useMemo(() => {
 
     const query = searchTerm.trim().toLowerCase()
@@ -1424,7 +1524,7 @@ function App() {
 
         attendee.email.toLowerCase().includes(query) ||
 
-        (attendee.project || '').toLowerCase().includes(query)
+        attendee.department.toLowerCase().includes(query)
 
       const matchesStatus = registrationFilter === 'All' || attendee.status === registrationFilter
 
@@ -1443,6 +1543,7 @@ function App() {
   async function handleMyPmoUpload() {
     setMypmoUploadMessage('')
     setMypmoUploadError('')
+
     if (!mypmoFile) {
       setMypmoUploadError('Choose an Excel workbook first.')
       return
@@ -1451,26 +1552,121 @@ function App() {
       setMypmoUploadError('Choose an .xlsx or .xls workbook.')
       return
     }
+    if (mypmoFile.size === 0 || mypmoFile.size > 10 * 1024 * 1024) {
+      setMypmoUploadError('Excel file must be between 1 byte and 10 MB.')
+      return
+    }
 
     setMypmoUploadBusy(true)
     try {
-      const form = new FormData()
-      form.append('file', mypmoFile)
-      form.append('roster', mypmoRoster)
+      const workbook = XLSX.read(await mypmoFile.arrayBuffer(), {
+        type: 'array',
+        cellDates: false,
+      })
+
+      if (!workbook.SheetNames.length) {
+        throw new Error('The workbook has no worksheets.')
+      }
+
+      const sheet = workbook.Sheets[workbook.SheetNames[0]]
+      if (!sheet) {
+        throw new Error('Could not read the first worksheet.')
+      }
+
+      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+        defval: '',
+        raw: false,
+      })
+
+      if (!rows.length) {
+        throw new Error('The first worksheet contains no employee rows.')
+      }
+      if (rows.length > 20000) {
+        throw new Error('The workbook contains too many rows. Maximum is 20,000.')
+      }
+
+      const headerRow = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+        header: 1,
+        defval: '',
+        blankrows: false,
+      })[0] ?? []
+
+      const headerMap = new Map<string, string>()
+      for (const value of headerRow) {
+        const header = String(value ?? '').trim()
+        if (header) headerMap.set(header.toLowerCase(), header)
+      }
+
+      const hasHeader = (name: string) => headerMap.has(name.toLowerCase())
+      const missingHeaders = ['EnterpriseId', 'ResourceName', 'InternetMail']
+        .filter(header => !hasHeader(header))
+
+      if (!hasHeader('Project') && !hasHeader('SOWName')) {
+        missingHeaders.push('Project (Aspire) or SOWName (IX)')
+      }
+      if (missingHeaders.length) {
+        throw new Error(`Workbook is missing required headers: ${missingHeaders.join(', ')}`)
+      }
+
+      const leadHeader = [
+        'Reporting Line Manager',
+        'PeopleLead(Workday)',
+        'ContractLead',
+        'FunctionLead',
+        'Supervisor',
+      ].find(hasHeader) ?? ''
+
+      const getCell = (row: Record<string, unknown>, ...names: string[]) => {
+        for (const name of names) {
+          const actual = headerMap.get(name.toLowerCase())
+          if (actual && row[actual] !== undefined && row[actual] !== null &&
+              String(row[actual]).trim() !== '') {
+            return String(row[actual]).trim()
+          }
+        }
+        return ''
+      }
+
+      const employees = rows.map((row, index) => ({
+        enterpriseId: getCell(row, 'EnterpriseId'),
+        fullName: getCell(row, 'ResourceName'),
+        email: getCell(row, 'InternetMail').toLowerCase(),
+        contactNumber: getCell(row, 'MobilePhone', 'PhoneNumber', 'ContactNumber'),
+        project: getCell(row, 'Project', 'SOWName'),
+        projectLead: leadHeader ? getCell(row, leadHeader) : '',
+        sourceRow: index + 2,
+      }))
+
       const response = await fetch('/api/mypmo/upload', {
         method: 'POST',
         credentials: 'same-origin',
-        body: form,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ employees }),
       })
-      const result = await response.json() as {
+
+      const responseText = await response.text()
+      let result: {
         ok?: boolean
         imported?: number
+        skippedDuplicates?: number
+        duplicateRows?: number[]
         message?: string
         error?: string
       }
+
+      try {
+        result = JSON.parse(responseText)
+      } catch {
+        const preview = responseText.replace(/\s+/g, ' ').slice(0, 240)
+        throw new Error(
+          `MyPMO API returned ${response.status} non-JSON content: ${preview || '(empty response)'}`,
+        )
+      }
+
       if (!response.ok || !result.ok) {
         throw new Error(result.error || result.message || 'Upload failed.')
       }
+
       setMypmoUploadMessage(
         result.message || `Imported ${result.imported ?? 0} employees successfully.`,
       )
@@ -1483,34 +1679,33 @@ function App() {
       setMypmoUploadBusy(false)
     }
   }
-
   async function handleMyPmoLookup() {
     const eid = mypmoEid.trim()
     setMypmoLookupMessage('')
     setMypmoLookupError('')
     setMypmoEmployee(null)
-    if (!eid) { setMypmoLookupError('Enter an Enterprise ID.'); return }
+    if (!eid) {
+      setMypmoLookupError('Enter an Enterprise ID.')
+      return
+    }
+
     setMypmoLookupBusy(true)
     try {
-      const fetchLookup = async (roster?: string) => {
-        const response = await fetch(`/api/mypmo/lookup?eid=${encodeURIComponent(eid)}${roster ? `&roster=${roster}` : ''}`, {
-          credentials: 'same-origin', headers: { Accept: 'application/json' },
-        })
-        return { response, result: await response.json() as {
-          found?: boolean; ambiguous?: boolean; employee?: MyPmoEmployee
-          matches?: MyPmoEmployee[]; message?: string; error?: string
-        } }
+      const response = await fetch(
+        `/api/mypmo/lookup?eid=${encodeURIComponent(eid)}`,
+        { credentials: 'same-origin', headers: { Accept: 'application/json' } },
+      )
+      const result = await response.json() as {
+        found?: boolean
+        employee?: MyPmoEmployee
+        message?: string
+        error?: string
       }
-      let { response, result } = await fetchLookup()
-      if (result.ambiguous && result.matches?.length) {
-        const choice = window.prompt('This Enterprise ID exists in both MyPMO rosters. Type ASPIRE or IX to choose the correct roster.')
-        const roster = choice?.trim().toUpperCase()
-        if (roster !== 'ASPIRE' && roster !== 'IX') throw new Error('Both Aspire and IX records exist. Lookup cancelled; choose ASPIRE or IX when prompted.')
-        ;({ response, result } = await fetchLookup(roster))
+      if (!response.ok || !result.found || !result.employee) {
+        throw new Error(result.message || result.error || 'Enterprise ID not found in MyPMO.')
       }
-      if (!response.ok || !result.found || !result.employee) throw new Error(result.message || result.error || 'Enterprise ID not found in MyPMO.')
       setMypmoEmployee(result.employee)
-      setMypmoLookupMessage(`Employee found in ${result.employee.roster_type === 'IX' ? 'Roche IX' : 'Roche Aspire'} MyPMO.`)
+      setMypmoLookupMessage('Employee found.')
     } catch (error) {
       setMypmoLookupError(error instanceof Error ? error.message : 'Lookup failed.')
     } finally {
@@ -1523,7 +1718,7 @@ function App() {
   }
   async function inventoryAction(path:string, payload:Record<string,unknown>) {
     setInventoryError(''); setInventoryMessage(''); setInventoryBusy(true)
-    try { const r=await fetch(path,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); const d=await r.json(); if(!r.ok) throw new Error(d.error||'Request failed'); setInventoryMessage(path.endsWith('/generate')?`Generated ${d.generated} bands (${d.prefix}${String(d.start).padStart(3,'0')}-${d.prefix}${String(d.end).padStart(3,'0')}).`:path.endsWith('/assign')?`${d.serial} assigned to ${d.attendee.name}.`:`${d.serial} checked in: ${d.attendee.name}.`); await loadInventory() } catch(e) { setInventoryError(e instanceof Error?e.message:'Request failed') } finally { setInventoryBusy(false) }
+    try { const r=await fetch(path,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); const d=await r.json(); if(!r.ok) throw new Error(d.error||'Request failed'); setInventoryMessage(path.endsWith('/generate')?`Generated ${d.generated} bands (${d.prefix}${String(d.start).padStart(3,'0')}–${d.prefix}${String(d.end).padStart(3,'0')}).`:path.endsWith('/assign')?`${d.serial} assigned to ${d.attendee.name}.`:`${d.serial} checked in: ${d.attendee.name}.`); if(path.endsWith('/assign')) window.alert('Band assigned successfully!'); await loadInventory() } catch(e) { setInventoryError(e instanceof Error?e.message:'Request failed') } finally { setInventoryBusy(false) }
   }
 
   async function printInventoryLabels() {
@@ -1582,7 +1777,7 @@ function App() {
     setInventoryMessage(`Prepared ${bands.length} QR label(s). The QR contains only its wristband serial; already assigned or checked-in bands were excluded.`)
   }
 
-  if (signedInStaff) {
+  if (signedInStaff && !showPublicRegistration) {
 
     return (
 
@@ -1599,7 +1794,7 @@ function App() {
           </div>
 
           <div className="topbar-actions">
-            <span className="event-label">STAFF PORTAL</span>
+            {!showPublicRegistration && <span className="event-label">STAFF PORTAL</span>}
             {signedInStaff && <button className="topbar-signout" type="button" onClick={handleSignOut}>Sign out <span aria-hidden="true">-&gt;</span></button>}
           </div>
 
@@ -1651,24 +1846,42 @@ function App() {
                 </button>
 
                 <div className="cc-quick-actions" aria-label="Other event tasks">
-                  <button type="button" className="cc-quick-action cc-emergency-action" onClick={() => { setActivePage('emergency'); setEmergencyError(''); setEmergencyMessage(''); setEmergencyResult(null); void stopQrScanner() }}>
-                    <span className="cc-quick-icon cc-emergency-icon" aria-hidden="true">!</span>
-                    <span><strong>Emergency Scanner</strong><small>Scan or enter a wristband number to view attendee and emergency contacts</small></span>
+                  <button type="button" className="cc-quick-action" onClick={() => {
+                    setEmergencyQuery('')
+                    setEmergencyResults([])
+                    setEmergencyError('')
+                    setActivePage('emergency')
+                  }}>
+                    <span className="cc-quick-icon" aria-hidden="true">&#9888;</span>
+                    <span><strong>Emergency Scanner</strong><small>Find an attendee and their emergency contacts</small></span>
                     <span className="cc-quick-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h15M13 5l7 7-7 7"/></svg></span>
                   </button>
-                  {(signedInStaff.role === 'admin' || signedInStaff.role === 'registration') && (<button type="button" className="cc-quick-action" onClick={() => { setActivePage('registration'); void loadAttendees() }}>
+                  {canManageRegistration(signedInStaff) && (<button type="button" className="cc-quick-action" onClick={() => { setRegistrationFilter('All'); setSearchTerm(''); setActivePage('registration'); void loadAttendees() }}>
                     <span className="cc-quick-icon" aria-hidden="true">&#9776;</span>
                     <span><strong>Attendees</strong><small>Search and update registrations</small></span>
                     <span className="cc-quick-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h15M13 5l7 7-7 7"/></svg></span>
                   </button>)}
+                  {canManageRegistration(signedInStaff) && (
+                    <button type="button" className="cc-quick-action" onClick={() => {
+                      setRegistrationFilter('Pending')
+                      setSearchTerm('')
+                      setAttendeeMessage('')
+                      setActivePage('registration')
+                      void loadAttendees()
+                    }}>
+                      <span className="cc-quick-icon" aria-hidden="true">&#128221;</span>
+                      <span><strong>Employee Registration</strong><small>Review QR submissions, edit details, allow or don't allow</small></span>
+                      <span className="cc-quick-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h15M13 5l7 7-7 7"/></svg></span>
+                    </button>
+                  )}
                   {/* QR wristband management is intentionally not a primary workflow in Option 2. */}
-                  {(signedInStaff.role === 'admin' || signedInStaff.role === 'registration') && (
+                  {canManageRegistration(signedInStaff) && (
                     <button type="button" className="cc-quick-action" onClick={() => { setActivePage('mypmo'); setMypmoUploadMessage(''); setMypmoUploadError(''); setMypmoLookupMessage(''); setMypmoLookupError(''); setMypmoEmployee(null) }}>
                       <span className="cc-quick-icon" aria-hidden="true">&#9776;</span>
                       <span><strong>MyPMO</strong><small>Import employee data and look up an Enterprise ID</small></span>
                       <span className="cc-quick-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h15M13 5l7 7-7 7"/></svg></span>
                     </button>
-                  )}                  {(signedInStaff.role === 'admin' || signedInStaff.role === 'registration') && (<button type="button" className="cc-quick-action" onClick={() => { setActivePage('inventory'); void loadInventory() }}>
+                  )}                  {signedInStaff.role === 'admin' && (<button type="button" className="cc-quick-action" onClick={() => { setActivePage('inventory'); void loadInventory() }}>
                     <span className="cc-quick-icon" aria-hidden="true">&#9776;</span>
                     <span><strong>Band Inventory</strong><small>Assign a preprinted band to an attendee</small></span>
                     <span className="cc-quick-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h15M13 5l7 7-7 7"/></svg></span>
@@ -1689,7 +1902,7 @@ function App() {
                   </button>
                 )}
                 </div>
-
+                
                 <div className="cc-attendee-summary cc-dashboard-summary">
                   <div className="summary-saved"><span>Saved attendees</span><strong>{attendees.length}</strong></div>
                   <div className="summary-registered"><span>Registered</span><strong>{registeredCount}</strong></div>
@@ -1706,70 +1919,122 @@ function App() {
 
           {activePage === 'emergency' && (
             <section className="cc-inventory-page cc-emergency-page">
-              <button className="dashboard-signout" type="button" onClick={() => { void stopEmergencyScanner(); setActivePage('home') }}>&#8592; Back to workspace</button>
-              <p className="section-kicker">EMERGENCY RESPONSE</p>
-              <h1>Emergency <span>attendee lookup.</span></h1>
-              <p className="login-description">Scan the QR on an assigned wristband or enter its serial number or the attendee's Enterprise ID. This is a read-only lookup and will not check anyone in.</p>
+              <button className="dashboard-signout" type="button" onClick={() => {
+                void stopEmergencyQrScanner()
+                setActivePage('home')
+              }}>&#8592; Back to workspace</button>
+
+              <p className="section-kicker">STAFF EMERGENCY SUPPORT</p>
+              <h1>Emergency Scanner.</h1>
+              <p className="login-description">
+                Find an attendee using their employee ID, QR code, or printed wristband serial number.
+                This is a read-only emergency lookup and does not perform check-in.
+              </p>
+
               <div className="cc-inventory-panel">
-                <h2>Scan wristband QR</h2>
-                <div id="cc-emergency-qr-reader" className="cc-qr-reader" />
-                <div className="cc-scanner-controls">
-                  <button className="add-attendee-button" type="button" disabled={emergencyScannerRunning} onClick={() => void startEmergencyScanner()}>{emergencyScannerRunning ? 'Camera running...' : 'Start emergency camera'}</button>
-                  <button className="attendee-cancel-button" type="button" disabled={!emergencyScannerRunning} onClick={() => void stopEmergencyScanner()}>Stop camera</button>
+                <div className="cc-inventory-fields">
+                  <button type="button" className={emergencyMode === 'eid' ? 'cc-primary-action' : 'attendee-cancel-button'}
+                    onClick={() => {
+                      setEmergencyMode('eid')
+                      setEmergencyQuery('')
+                      setEmergencyResults([])
+                      setEmergencyError('')
+                    }}>Employee ID</button>
+
+                  <button type="button" className="attendee-cancel-button"
+                    onClick={() => {
+                      setEmergencyQuery('')
+                      setEmergencyResults([])
+                      setEmergencyError('')
+                      setEmergencyMode('eid')
+                    }}>QR Scanner</button>
+
+                  <button type="button" className={emergencyMode === 'serial' ? 'cc-primary-action' : 'attendee-cancel-button'}
+                    onClick={() => {
+                      setEmergencyMode('serial')
+                      setEmergencyQuery('')
+                      setEmergencyResults([])
+                      setEmergencyError('')
+                    }}>QR Tag Serial</button>
                 </div>
-                <form className="cc-manual-checkin" onSubmit={event => { event.preventDefault(); void lookupEmergencyDetails() }}>
-                  <label htmlFor="cc-emergency-query">Wristband serial or Enterprise ID</label>
-                  <input id="cc-emergency-query" value={emergencyQuery} onChange={event => setEmergencyQuery(event.target.value)} placeholder="Scan or enter band number / EID" maxLength={200} required />
-                  <button className="cc-primary-action" type="submit" disabled={emergencyBusy}>{emergencyBusy ? 'Searching...' : 'Find attendee details'}</button>
-                </form>
-                {emergencyError && <p className="attendee-form-error" role="alert">{emergencyError}</p>}
-                {emergencyMessage && <p className="attendee-form-message" role="status">{emergencyMessage}</p>}
-              </div>
-              {emergencyResult && (
-                <div className="cc-inventory-panel cc-emergency-result" aria-live="polite">
-                  <h2>{emergencyResult.attendee?.name || emergencyResult.mypmo?.[0]?.full_name || 'Attendee record'}</h2>
-                  {!emergencyResult.registered && <p className="attendee-form-message">Not registered for the event. The MyPMO information below is roster data only.</p>}
-                  {emergencyResult.attendee && (
-                    <div className="cc-emergency-details">
-                      <p><strong>Full name</strong><span>{emergencyResult.attendee.name || 'Not available'}</span></p>
-                      <p><strong>Enterprise ID</strong><span>{emergencyResult.attendee.eid || 'Not available'}</span></p>
-                      <p><strong>Email</strong><span>{emergencyResult.attendee.email || 'Not available'}</span></p>
-                      <p><strong>Contact number</strong><span>{emergencyResult.attendee.contact_number || 'Not available'}</span></p>
-                      <p><strong>Family emergency contact</strong><span>{emergencyResult.attendee.family_emergency_contact_number || 'Not available'}</span></p>
-                      <p><strong>Colleague emergency contact</strong><span>{emergencyResult.attendee.colleague_emergency_contact_number || 'Not available'}</span></p>
-                      <p><strong>Project</strong><span>{emergencyResult.attendee.project || 'Not available'}</span></p>
-                      <p><strong>Project lead</strong><span>{emergencyResult.attendee.project_lead || 'Not available'}</span></p>
-                      <p><strong>Registration status</strong><span>{emergencyResult.attendee.status || 'Not available'}</span></p>
-                      <p><strong>Registration source</strong><span>{emergencyResult.attendee.registration_source || 'Not available'}</span></p>
-                      <p><strong>Check-in time</strong><span>{formatIndiaDateTime(emergencyResult.attendee.checked_in_at)}</span></p>
+
+                {emergencyMode === 'eid' && (
+                  <form onSubmit={e => { e.preventDefault(); void searchEmergencyContacts() }}>
+                    <label htmlFor="emergency-search">Employee ID</label>
+                    <div className="cc-inventory-fields">
+                      <input id="emergency-search" type="text" value={emergencyQuery}
+                        onChange={e => setEmergencyQuery(e.target.value)}
+                        placeholder="Enter employee ID" maxLength={100}
+                        autoComplete="off" required />
+                      <button className="cc-primary-action" type="submit"
+                        disabled={emergencyBusy || !emergencyQuery.trim()}>
+                        {emergencyBusy ? 'Searching...' : 'Find attendee'}
+                      </button>
                     </div>
-                  )}
-                  <h3>Wristband</h3>
-                  <div className="cc-emergency-details">
-                    <p><strong>Serial number</strong><span>{emergencyResult.band?.serial || 'No band assigned'}</span></p>
-                    <p><strong>Band status</strong><span>{emergencyResult.band?.status || 'Not available'}</span></p>
-                    <p><strong>Assigned at</strong><span>{formatIndiaDateTime(emergencyResult.band?.assigned_at)}</span></p>
-                    <p><strong>Band check-in time</strong><span>{formatIndiaDateTime(emergencyResult.band?.checked_in_at)}</span></p>
+                  </form>
+                )}
+
+                {emergencyMode === 'serial' && (
+                  <form onSubmit={e => { e.preventDefault(); void searchEmergencyContacts() }}>
+                    <label htmlFor="emergency-serial">Printed wristband QR tag serial number</label>
+                    <div className="cc-inventory-fields">
+                      <input id="emergency-serial" type="text" value={emergencyQuery}
+                        onChange={e => setEmergencyQuery(e.target.value)}
+                        placeholder="Enter wristband serial number" maxLength={100}
+                        autoComplete="off" required />
+                      <button className="cc-primary-action" type="submit"
+                        disabled={emergencyBusy || !emergencyQuery.trim()}>
+                        {emergencyBusy ? 'Searching...' : 'Find attendee'}
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                <div style={{marginTop:'18px'}}>
+                  <h3>Scan attendee wristband QR</h3>
+                  <div id="cc-emergency-qr-reader" className="cc-qr-reader" />
+                  <div className="cc-inventory-fields">
+                    <button className="cc-primary-action" type="button"
+                      disabled={emergencyScannerRunning || emergencyBusy}
+                      onClick={() => void startEmergencyQrScanner()}>
+                      {emergencyScannerRunning ? 'Camera running...' : 'Start QR camera'}
+                    </button>
+                    <button className="attendee-cancel-button" type="button"
+                      disabled={!emergencyScannerRunning}
+                      onClick={() => void stopEmergencyQrScanner()}>
+                      Stop camera
+                    </button>
                   </div>
-                  <h3>MyPMO matches</h3>
-                  {!emergencyResult.mypmo?.length && <p>No matching MyPMO record.</p>}
-                  {emergencyResult.mypmo?.map((employee, index) => (
-                    <div className="cc-emergency-mypmo" key={`${employee.roster_type}-${employee.enterprise_id}-${index}`}>
-                      <p><strong>Roster:</strong> {employee.roster_type === 'IX' ? 'Roche IX MyPMO' : 'Roche Aspire MyPMO'}</p>
-                      <p><strong>Full name:</strong> {employee.full_name || 'Not available'}</p>
-                      <p><strong>Enterprise ID:</strong> {employee.enterprise_id || 'Not available'}</p>
-                      <p><strong>Email:</strong> {employee.email || 'Not available'}</p>
-                      <p><strong>Project:</strong> {employee.project || 'Not available'}</p>
-                      <p><strong>Project lead:</strong> {employee.project_lead || 'Not available'}</p>
-                      <p><strong>Resource status:</strong> {employee.resource_status || 'Not available'}</p>
-                    </div>
-                  ))}
-                  <p className="login-description">Emergency details are shown only to signed-in event staff. Lookup does not change attendee registration, wristband assignment, or check-in.</p>
                 </div>
-              )}
+
+                {emergencyError && <p className="attendee-form-message" role="status">{emergencyError}</p>}
+                {emergencyBusy && <p role="status">Looking up attendee...</p>}
+              </div>
+
+              {emergencyResults.map((attendee: any) => (
+                <article className="cc-inventory-panel" key={attendee.eid} style={{marginTop:'16px'}}>
+                  <h2>{attendee.name}</h2>
+                  <p><strong>Employee ID:</strong> {attendee.eid || 'Not available'}</p>
+                  <p><strong>Project:</strong> {attendee.project || 'Not available'}</p>
+                  <p><strong>Attendee contact:</strong> {attendee.contact_number || 'Not provided'}</p>
+                  <div className="cc-inventory-fields">
+                    <div>
+                      <h3>Family emergency contact</h3>
+                      <p>{attendee.family_emergency_contact_number || 'Not provided'}</p>
+                    </div>
+                    <div>
+                      <h3>Colleague emergency contact</h3>
+                      <p>{attendee.colleague_emergency_contact_number || 'Not provided'}</p>
+                    </div>
+                  </div>
+                </article>
+              ))}
+
+              <p className="login-description">
+                Emergency contact details are confidential. Share them only with personnel involved in handling the incident.
+              </p>
             </section>
           )}
-
           {activePage === 'employee-prereg' && signedInStaff.role === 'admin' && (
             <section className="cc-inventory-page">
               <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>&#8592; Back to workspace</button>
@@ -1778,7 +2043,7 @@ function App() {
               <p className="login-description">Upload employee responses exported from Microsoft Forms. Review and validate the records before importing them.</p>
               <div className="cc-inventory-panel">
                 <h2>Upload Microsoft Forms responses</h2>
-                <p>Choose an Excel or CSV export and review validation results before importing. If an Enterprise ID exists in both Aspire and IX, add a column named <strong>Roster</strong> with <strong>ASPIRE</strong> or <strong>IX</strong> for that row. Otherwise, the roster column is optional.</p>
+                <p>Choose an Excel or CSV export and review validation results before importing.</p>
                 <label htmlFor="employee-import-file">Microsoft Forms export (.xlsx, .xls, .csv)</label>
                 <input
                   id="employee-import-file"
@@ -1799,12 +2064,12 @@ function App() {
                       <strong>{employeeImportRows.filter((row) => row.valid).length}</strong> valid rows;{' '}
                       <strong>{employeeImportRows.filter((row) => !row.valid).length}</strong> need attention.
                     </p>
-                    <div className="registration-table-wrap">
+              <div className="registration-table-wrap">
                       <table className="registration-table">
                         <thead>
                           <tr>
-                            <th>Employee ID</th><th>Roster</th><th>Name</th><th>Email</th>
-                            <th>Project</th><th>Contact</th>
+                            <th>Employee ID</th><th>Name</th><th>Email</th>
+                            <th>Project / Department</th><th>Contact</th>
                             <th>Project Lead</th><th>Validation</th>
                           </tr>
                         </thead>
@@ -1812,7 +2077,6 @@ function App() {
                           {employeeImportRows.map((row, index) => (
                             <tr key={`${row.eid}-${index}`}>
                               <td>{row.eid || '—'}</td>
-                              <td>{row.roster_type || 'Auto'}</td>
                               <td>{row.name || '—'}</td>
                               <td>{row.email || '—'}</td>
                               <td>{row.project || '—'}</td>
@@ -1857,12 +2121,6 @@ function App() {
                 <section className="cc-inventory-panel">
                   <h2>Import Excel workbook</h2>
                   <p>Accepted formats: .xlsx and .xls. Use approved data only.</p>
-                  <label htmlFor="mypmo-roster">MyPMO roster
-                    <select id="mypmo-roster" value={mypmoRoster} onChange={(event) => setMypmoRoster(event.target.value as 'ASPIRE' | 'IX')}>
-                      <option value="ASPIRE">Roche Aspire MyPMO</option>
-                      <option value="IX">Roche IX MyPMO</option>
-                    </select>
-                  </label>
                   <input id="mypmo-file" type="file" accept=".xlsx,.xls" onChange={(event) => { setMypmoFile(event.target.files?.[0] ?? null); setMypmoUploadMessage(''); setMypmoUploadError('') }} />
                   <button className="cc-primary-action" type="button" disabled={!mypmoFile || mypmoUploadBusy} onClick={() => void handleMyPmoUpload()}>
                     {mypmoUploadBusy ? 'Uploading...' : 'Upload MyPMO workbook'}
@@ -1888,12 +2146,12 @@ function App() {
                 {mypmoLookupError && <p className="attendee-form-error" role="alert">{mypmoLookupError}</p>}
                 {mypmoEmployee && (
                   <div className="cc-inventory-fields">
-                    <p><strong>Roster:</strong> {mypmoEmployee.roster_type === 'IX' ? 'Roche IX MyPMO' : 'Roche Aspire MyPMO'}</p>\n                    <p><strong>Enterprise ID:</strong> {mypmoEmployee.enterprise_id}</p>
+                    <p><strong>Enterprise ID:</strong> {mypmoEmployee.enterprise_id}</p>
                     <p><strong>Full name:</strong> {mypmoEmployee.full_name}</p>
                     <p><strong>Email:</strong> {mypmoEmployee.email}</p>
+                    <p><strong>Mobile:</strong> {mypmoEmployee.contact_number || 'Not provided'}</p>
                     <p><strong>Project:</strong> {mypmoEmployee.project || 'Not provided'}</p>
-                    <p><strong>Project lead:</strong> {mypmoEmployee.project_lead || 'Not provided'}</p>
-                    <p><strong>Resource status:</strong> {mypmoEmployee.resource_status || 'Not provided'}</p>
+                    <p><strong>Reporting manager:</strong> {mypmoEmployee.project_lead || 'Not provided'}</p>
                   </div>
                 )}
               </section>
@@ -1910,11 +2168,11 @@ function App() {
       <button className="cc-primary-action" type="button" onClick={() => void loadOperationsDashboard()} disabled={operationsDashboardBusy}>
         {operationsDashboardBusy ? 'Refreshing...' : 'Refresh now'}
       </button>
-      <button className="cc-primary-action" type="button" onClick={() => void downloadAuditLogs()}>
-        Download audit CSV
+      <button className="cc-quick-action" type="button" onClick={downloadOperationsCsv} disabled={!operationsDashboard}>
+        Download CSV
       </button>
       <span>Auto-refreshes every 5 seconds</span>
-      {operationsDashboard?.generatedAt && <span>Updated: {formatIndiaDateTime(operationsDashboard.generatedAt)}</span>}
+      {operationsDashboard?.generatedAt && <span>Updated: {new Date(operationsDashboard.generatedAt).toLocaleString()}</span>}
     </div>
     {!operationsDashboard && !operationsDashboardError && <p>Loading live event data...</p>}
     {operationsDashboard && (
@@ -1946,9 +2204,9 @@ function App() {
           <table style={{width:'100%',borderCollapse:'collapse',textAlign:'left'}}>
             <thead><tr><th>Action</th><th>Attendee</th><th>EID</th><th>Band serial</th><th>Staff ID</th><th>Timestamp</th></tr></thead>
             <tbody>
-              {(operationsDashboard.assignments || []).filter((item: OperationsAssignment) => [item.action,item.attendee_name,item.eid,item.serial,item.staff_id,item.performed_at].some(value => String(value ?? '').toLowerCase().includes(operationsDashboardSearch.toLowerCase()))).map((item: OperationsAssignment,index:number) => (
+              {(operationsDashboard.assignments || []).filter((item:any) => [item.action,item.attendee_name,item.eid,item.serial,item.staff_id,item.performed_at].some(value => String(value ?? '').toLowerCase().includes(operationsDashboardSearch.toLowerCase()))).map((item:any,index:number) => (
                 <tr key={`${item.serial}-${item.performed_at}-${index}`}>
-                  <td>{item.action}</td><td>{item.attendee_name || '—'}</td><td>{item.eid || '—'}</td><td>{item.serial}</td><td>{item.staff_id || '—'}</td><td>{item.performed_at ? formatIndiaDateTime(item.performed_at) : '—'}</td>
+                  <td>{item.action}</td><td>{item.attendee_name || '—'}</td><td>{item.eid || '—'}</td><td>{item.serial}</td><td>{item.staff_id || '—'}</td><td>{formatIndiaDateTime(item.performed_at)}</td>
                 </tr>
               ))}
             </tbody>
@@ -1959,9 +2217,9 @@ function App() {
           <table style={{width:'100%',borderCollapse:'collapse',textAlign:'left'}}>
             <thead><tr><th>Attendee</th><th>EID</th><th>Band serial</th><th>Method</th><th>Staff ID</th><th>Timestamp</th></tr></thead>
             <tbody>
-              {(operationsDashboard.checkins || []).filter((item: OperationsCheckin) => [item.attendee_name,item.eid,item.serial,item.method,item.staff_id,item.checked_in_at].some(value => String(value ?? '').toLowerCase().includes(operationsDashboardSearch.toLowerCase()))).map((item: OperationsCheckin,index:number) => (
+              {(operationsDashboard.checkins || []).filter((item:any) => [item.attendee_name,item.eid,item.serial,item.method,item.staff_id,item.checked_in_at].some(value => String(value ?? '').toLowerCase().includes(operationsDashboardSearch.toLowerCase()))).map((item:any,index:number) => (
                 <tr key={`${item.eid}-${item.checked_in_at}-${index}`}>
-                  <td>{item.attendee_name || '—'}</td><td>{item.eid}</td><td>{item.serial || '—'}</td><td>{item.method}</td><td>{item.staff_id || '—'}</td><td>{item.checked_in_at ? formatIndiaDateTime(item.checked_in_at) : '—'}</td>
+                  <td>{item.attendee_name || '—'}</td><td>{item.eid}</td><td>{item.serial || '—'}</td><td>{item.method}</td><td>{item.staff_id || '—'}</td><td>{formatIndiaDateTime(item.checked_in_at)}</td>
                 </tr>
               ))}
             </tbody>
@@ -1972,9 +2230,9 @@ function App() {
           <table style={{width:'100%',borderCollapse:'collapse',textAlign:'left'}}>
             <thead><tr><th>Attendee</th><th>EID</th><th>Band serial</th><th>Assigned at</th></tr></thead>
             <tbody>
-              {(operationsDashboard.awaitingCheckin || []).filter((item: OperationsAwaitingCheckin) => [item.attendee_name,item.eid,item.serial,item.assigned_at].some(value => String(value ?? '').toLowerCase().includes(operationsDashboardSearch.toLowerCase()))).map((item: OperationsAwaitingCheckin,index:number) => (
+              {(operationsDashboard.awaitingCheckin || []).filter((item:any) => [item.attendee_name,item.eid,item.serial,item.assigned_at].some(value => String(value ?? '').toLowerCase().includes(operationsDashboardSearch.toLowerCase()))).map((item:any,index:number) => (
                 <tr key={`${item.serial}-${index}`}>
-                  <td>{item.attendee_name || '—'}</td><td>{item.eid}</td><td>{item.serial}</td><td>{item.assigned_at ? formatIndiaDateTime(item.assigned_at) : '—'}</td>
+                  <td>{item.attendee_name || '—'}</td><td>{item.eid}</td><td>{item.serial}</td><td>{formatIndiaDateTime(item.assigned_at)}</td>
                 </tr>
               ))}
             </tbody>
@@ -1984,7 +2242,7 @@ function App() {
     )}
   </section>
 )}
-          {activePage === 'inventory' && (
+          {activePage === 'inventory' && signedInStaff.role === 'admin' && (
             <section className="cc-inventory-page">
               <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>&#8592; Back to workspace</button>
               <p className="section-kicker">BAND INVENTORY</p><h1>Band inventory.</h1>
@@ -2042,13 +2300,13 @@ function App() {
                 <button className="cc-primary-action" disabled={inventoryBusy||!inventorySerial.trim()||!inventoryEid.trim()} type="button" onClick={()=>void inventoryAction('/api/inventory/assign',{serial:inventorySerial,eid:inventoryEid})}>Assign band</button>
               </section>
               {signedInStaff.role === 'admin' && <section className="cc-inventory-panel"><h2>Inventory list</h2><div className="cc-inventory-fields"><label>Search serial number<input placeholder="ACC099" value={inventorySearch} onChange={e=>setInventorySearch(e.target.value.toUpperCase())}/></label><button type="button" className="dashboard-signout" onClick={()=>void loadInventory()}>Refresh</button></div>
-                <div className="cc-inventory-table-wrap" style={{width:"100%", maxWidth:"100%", overflowX:"auto", display:"block"}}><table className="cc-inventory-table" style={{minWidth:"640px", width:"100%"}}><thead><tr><th>Serial</th><th>Status</th><th>Employee ID</th><th>Attendee</th></tr></thead><tbody>{inventoryBands.filter(b=>!inventorySearch||b.serial.includes(inventorySearch)).slice(0,10).map(b=><tr key={b.serial}><td>{b.serial}</td><td>{b.status}</td><td>{b.attendee_eid||'—'}</td><td>{b.name||'—'}</td></tr>)}</tbody></table></div><p className="login-description">Showing up to 10 latest inventory records.</p>
+                <div className="cc-inventory-table-wrap"><table className="cc-inventory-table"><thead><tr><th>Serial</th><th>Status</th><th>Employee ID</th><th>Attendee</th></tr></thead><tbody>{inventoryBands.filter(b=>!inventorySearch||b.serial.includes(inventorySearch)).slice(0,10).map(b=><tr key={b.serial}><td>{b.serial}</td><td>{b.status}</td><td>{b.attendee_eid||'—'}</td><td>{b.name||'—'}</td></tr>)}</tbody></table></div><p className="login-description">Showing up to 10 latest inventory records.</p>
               </section>}
               </div>
             </section>
           )}
 
-          {activePage === 'registration' && (
+          {activePage === 'registration' && canManageRegistration(signedInStaff) && (
 
             <>
 
@@ -2074,6 +2332,18 @@ function App() {
 
               </div>
 
+
+              <section className="cc-inventory-panel cc-public-registration-qr-panel">
+                <div className="attendee-form-heading">
+                  <div>
+                    <p className="section-kicker">REGISTRATION DESK</p>
+                    <h2>Public employee registration QR</h2>
+                  </div>
+                  <button className="attendee-save-button" type="button" onClick={printPublicRegistrationQr}>Print registration QR</button>
+                </div>
+                <p>Print this QR and place it at the registration desk. Employees scan it on their phones to open the public form in this same Champion Celebration application. No employee login is required.</p>
+                <p className="login-description">QR destination: <strong>{`${window.location.origin}/?register=1`}</strong>. Print it from the live event website so it opens correctly on employees' phones; a localhost QR works only on the local computer.</p>
+              </section>
 
               {attendeeMessage && <p className="attendee-form-message" role="status">{attendeeMessage}</p>}
 
@@ -2164,7 +2434,7 @@ function App() {
 
                     <div><p className="section-kicker">EDIT REGISTRATION</p><h3>Edit attendee: {editingAttendee.eid}</h3></div>
 
-                    <p>Update attendee details. Existing registration eligibility is preserved.</p>
+                    <p>Correct submitted details before approval. Registration status is controlled by the approval workflow.</p>
 
                   </div>
 
@@ -2176,10 +2446,14 @@ function App() {
 
                     <div><label htmlFor="edit-email">Email address</label><input id="edit-email" type="email" value={editEmail} onChange={(event) => setEditEmail(event.target.value)} maxLength={254} required /></div>
 
-                    <div><label htmlFor="edit-project">Project</label><input id="edit-project" value={editProject} onChange={(event) => setEditProject(event.target.value)} maxLength={150} required /></div>
+                    <div><label htmlFor="edit-department">Project</label><input id="edit-department" value={editDepartment} onChange={(event) => setEditDepartment(event.target.value)} maxLength={150} required /></div>
                     <div><label htmlFor="edit-contact-number">Contact number</label><input id="edit-contact-number" type="tel" value={editContactNumber} onChange={(event) => setEditContactNumber(event.target.value)} maxLength={40} /></div>
                     <div><label htmlFor="edit-family-emergency">Emergency contact number</label><input id="edit-family-emergency" type="tel" value={editFamilyEmergency} onChange={(event) => setEditFamilyEmergency(event.target.value)} maxLength={40} /></div>
                     <div><label htmlFor="edit-colleague-emergency">Colleague's contact number</label><input id="edit-colleague-emergency" type="tel" value={editColleagueEmergency} onChange={(event) => setEditColleagueEmergency(event.target.value)} maxLength={40} /></div>
+                    <div><label htmlFor="edit-residential-address">Residential address</label><textarea id="edit-residential-address" value={editResidentialAddress} onChange={(event) => setEditResidentialAddress(event.target.value)} maxLength={1000} rows={3} /></div>
+                    <div><label htmlFor="edit-colleague-enterprise-id">Colleague Enterprise ID</label><input id="edit-colleague-enterprise-id" value={editColleagueEnterpriseId} onChange={(event) => setEditColleagueEnterpriseId(event.target.value)} maxLength={100} /></div>
+                    <div><label htmlFor="edit-family-contact-name">Family emergency contact name</label><input id="edit-family-contact-name" value={editFamilyContactName} onChange={(event) => setEditFamilyContactName(event.target.value)} maxLength={200} /></div>
+                    <div><label htmlFor="edit-family-contact-relation">Family emergency contact relation</label><input id="edit-family-contact-relation" value={editFamilyContactRelation} onChange={(event) => setEditFamilyContactRelation(event.target.value)} maxLength={100} /></div>
                     <div><label htmlFor="edit-people-lead">People Lead</label><input id="edit-people-lead" value={editPeopleLead} onChange={(event) => setEditPeopleLead(event.target.value)} maxLength={200} /></div>
 
                   </div>
@@ -2232,13 +2506,68 @@ function App() {
 
               </div>
 
+              <section className="attendee-form">
+                <div className="attendee-form-heading">
+                  <div>
+                    <p className="section-kicker">LIVE REGISTRATION</p>
+                    <h3>Pending employee submissions</h3>
+                  </div>
+                </div>
+
+                {approvalMessage && <p className="attendee-form-message" role="status">{approvalMessage}</p>}
+                {approvalError && <p className="attendee-form-error" role="alert">{approvalError}</p>}
+
+                {attendees.filter((attendee) => attendee.status === 'Pending').length === 0 ? (
+                  <p>No pending employee registrations.</p>
+                ) : (
+                  <div className="registration-table-wrap">
+                    <table className="registration-table">
+                      <thead>
+                        <tr>
+                          <th>Employee ID</th>
+                          <th>Employee</th>
+                          <th>Project</th>
+                          <th>MyPMO Status</th>
+                          <th>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {attendees.filter((attendee) => attendee.status === 'Pending').map((attendee) => (
+                          <tr key={`pending-${attendee.eid}`}>
+                            <td><span className="attendee-eid">{attendee.eid}</span></td>
+                            <td>
+                              <div className="attendee-name">{attendee.name}</div>
+                              <div className="attendee-email">{attendee.email}</div>
+                            </td>
+                            <td>{attendee.project || attendee.department}</td>
+                            <td>{attendee.mypmo_available === 1 ? <span className="status-available">Available</span> : <span className="status-unavailable">Not Available</span>}</td>
+                            <td className="pending-registration-actions">
+                              <button className="attendee-cancel-button" type="button" onClick={() => startEditingAttendee(attendee)}>Edit details</button>
+                              <button
+                                className="attendee-save-button"
+                                type="button"
+                                disabled={approvalBusyEid === attendee.eid}
+                                onClick={() => void approvePendingRegistration(attendee.eid)}
+                              >
+                                {approvalBusyEid === attendee.eid ? 'Allowing...' : 'Allow'}
+                              </button>
+                              <button className="attendee-cancel-button" type="button" disabled={approvalBusyEid === attendee.eid} onClick={() => void rejectPendingRegistration(attendee.eid)}>Don't Allow</button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </section>
               <div className="registration-table-wrap">
 
                 {isLoadingAttendees && <p role="status">Loading saved attendees...</p>}
 
                 <table className="registration-table">
 
-                  <thead><tr><th>Employee ID</th><th>Attendee</th><th>Project</th><th>Status</th><th>Actions</th></tr></thead>
+                  <thead><tr><th>Employee ID</th><th>Attendee</th><th>Project</th>
+                          <th>MyPMO Status</th><th>Status</th><th>Actions</th></tr></thead>
 
                   <tbody>
 
@@ -2250,7 +2579,7 @@ function App() {
 
                         <td><div className="attendee-name">{attendee.name}</div><div className="attendee-email">{attendee.email}</div></td>
 
-                        <td>{attendee.project}</td>
+                        <td>{attendee.department}</td>
 
                         <td><span className={`registration-status status-${attendee.status.toLowerCase()}`}>{attendee.status}</span></td>
 
@@ -2296,7 +2625,7 @@ function App() {
 
               <div className="registration-toolbar"><div className="registration-search"><label htmlFor="band-search">Find attendee</label><input id="band-search" type="search" placeholder="Search by name or EID" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} /></div><button className="add-attendee-button" type="button" onClick={() => void loadWristbands()} disabled={isLoadingWristbands}>{isLoadingWristbands ? 'Loading...' : 'Refresh QR bands'}</button></div>
 
-              <div className="cc-qr-grid">{attendees.filter(a => a.status === 'Registered' && (a.name.toLowerCase().includes(searchTerm.toLowerCase()) || a.eid.toLowerCase().includes(searchTerm.toLowerCase()))).map(a => { const band = wristbands.find(b => b.eid === a.eid); return <article className="cc-qr-card" key={a.eid}><h3>{a.name}</h3><p>{a.eid} - {a.project}</p>{band && wristbandImages[a.eid] ? <img className="cc-qr-image" src={wristbandImages[a.eid]} alt={`QR wristband for ${a.eid}`} /> : <div className="cc-qr-placeholder">QR not assigned</div>}<div className="cc-qr-actions"><button className="attendee-save-button" type="button" onClick={() => void assignWristband(a.eid)}>{band ? 'Refresh QR' : 'Generate QR'}</button><button className="attendee-cancel-button" type="button" disabled={!band || !wristbandImages[a.eid]} onClick={() => printWristband(a.eid)}>Print</button></div></article> })}</div>
+              <div className="cc-qr-grid">{attendees.filter(a => a.status === 'Registered' && (a.name.toLowerCase().includes(searchTerm.toLowerCase()) || a.eid.toLowerCase().includes(searchTerm.toLowerCase()))).map(a => { const band = wristbands.find(b => b.eid === a.eid); return <article className="cc-qr-card" key={a.eid}><h3>{a.name}</h3><p>{a.eid} - {a.department}</p>{band && wristbandImages[a.eid] ? <img className="cc-qr-image" src={wristbandImages[a.eid]} alt={`QR wristband for ${a.eid}`} /> : <div className="cc-qr-placeholder">QR not assigned</div>}<div className="cc-qr-actions"><button className="attendee-save-button" type="button" onClick={() => void assignWristband(a.eid)}>{band ? 'Refresh QR' : 'Generate QR'}</button><button className="attendee-cancel-button" type="button" disabled={!band || !wristbandImages[a.eid]} onClick={() => printWristband(a.eid)}>Print</button></div></article> })}</div>
 
               {attendees.filter(a => a.status === 'Registered').length === 0 && <p>No registered attendees yet. Add a test attendee first.</p>}
 
@@ -2329,7 +2658,7 @@ function App() {
                   <div className="cc-checkin-attendee">
                     <p><strong>Attendee</strong><span>{checkedInAttendee.name}</span></p>
                     <p><strong>Employee ID</strong><span>{checkedInAttendee.eid}</span></p>
-                    <p><strong>Project</strong><span>{checkedInAttendee.project}</span></p>
+                    <p><strong>Project</strong><span>{checkedInAttendee.department}</span></p>
                     <p><strong>Check-in time</strong><span>{formatIndiaDateTime(checkedInAttendee.checked_in_at)}</span></p>
                   </div>
                 </section>
@@ -2394,60 +2723,79 @@ function App() {
 
         <div className="brand"><span className="brand-mark">CC</span><span>CHAMPION <strong>CELEBRATION</strong></span></div>
 
-        <span className="event-label">STAFF PORTAL</span>
+        {!showPublicRegistration && <span className="event-label">STAFF PORTAL</span>}
 
       </nav>
 
-      <section className="login-layout">
-
-        <div className="login-intro">
-
-          <p className="section-kicker">THE TEAM BEHIND THE MAGIC</p>
-
-          <h1>Every great<br />event starts<br /><span>with a team.</span></h1>
-
-          <p className="login-description">Your event. Your team. One unforgettable celebration. Sign in to access the Champion Celebration staff portal.</p>
-
-          <div className="login-promise"><span className="promise-icon">*</span><div><strong>One team. One celebration.</strong><p>Event operations, made simple.</p></div></div>
-
-        </div>
-
-        <div className="login-card">
-
-          <div className="card-emblem">CC</div>
-
-          <p className="section-kicker">WELCOME BACK</p><h2>Staff sign in</h2>
-
-          <p className="card-description">Enter your staff credentials to continue.</p>
-
-          <form onSubmit={handleSubmit}>
-
-            <label htmlFor="staffId">Staff ID</label>
-
-            <input id="staffId" name="staffId" type="text" autoComplete="username" placeholder="Enter your staff ID" value={staffId} onChange={(event) => { setStaffId(event.target.value); setMessage('') }} maxLength={100} required disabled={isLoading} />
-
-            <label htmlFor="password">Password</label>
-
-            <div className="password-field">
-
-              <input id="password" name="password" type={showPassword ? 'text' : 'password'} autoComplete="current-password" placeholder="Enter your password" value={password} onChange={(event) => { setPassword(event.target.value); setMessage('') }} maxLength={256} required disabled={isLoading} />
-
-              <button className="show-password" type="button" onClick={() => setShowPassword((visible) => !visible)} aria-label={showPassword ? 'Hide password' : 'Show password'} aria-pressed={showPassword} disabled={isLoading}>{showPassword ? 'HIDE' : 'SHOW'}</button>
-
+      {showPublicRegistration ? (
+        <section className="public-registration-page">
+          <div className="public-registration-card">
+            <div className="card-emblem">CC</div>
+            <p className="section-kicker">CHAMPION CELEBRATION · LIVE REGISTRATION</p>
+            {publicSubmitted ? (
+              <div className="cc-checkin-success" role="status">
+                <h2>REGISTRATION SUBMITTED</h2>
+                <p>Your details have been submitted successfully and are awaiting review by event registration staff.</p>
+              </div>
+            ) : (
+              <>
+                <h1>Employee registration</h1>
+                <p className="public-registration-intro">Complete your details carefully. Event registration staff will review your submission before confirming your registration.</p>
+                {publicError && <p className="attendee-form-error" role="alert">{publicError}</p>}
+                <form className="public-registration-form" onSubmit={submitPublicRegistration}>
+                  <div className="attendee-form-grid">
+                    <div><label htmlFor="public-eid">Enterprise ID</label><input id="public-eid" value={publicEid} onChange={(event) => setPublicEid(event.target.value)} maxLength={100} required /></div>
+                    <div><label htmlFor="public-name">Full name</label><input id="public-name" value={publicName} onChange={(event) => setPublicName(event.target.value)} maxLength={200} required /></div>
+                    <div><label htmlFor="public-email">Email address</label><input id="public-email" type="email" value={publicEmail} onChange={(event) => setPublicEmail(event.target.value)} maxLength={254} required /></div>
+                    <div><label htmlFor="public-project">Project</label><input id="public-project" value={publicProject} onChange={(event) => setPublicProject(event.target.value)} maxLength={150} required /></div>
+                    <div><label htmlFor="public-project-lead">Project Lead</label><input id="public-project-lead" value={publicProjectLead} onChange={(event) => setPublicProjectLead(event.target.value)} maxLength={150} /></div>
+                    <div><label htmlFor="public-contact">Your contact number</label><input id="public-contact" type="tel" inputMode="numeric" pattern="[0-9]{10}" maxLength={10} value={publicContact} onChange={(event) => setPublicContact(event.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="10-digit mobile number" required /></div>
+                    <div><label htmlFor="public-emergency">Family emergency contact</label><input id="public-emergency" type="tel" inputMode="numeric" pattern="[0-9]{10}" maxLength={10} value={publicEmergencyContact} onChange={(event) => setPublicEmergencyContact(event.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="10-digit mobile number" required /></div>
+                    <div><label htmlFor="public-colleague">Colleague contact number</label><input id="public-colleague" type="tel" inputMode="numeric" pattern="[0-9]{10}" maxLength={10} value={publicColleagueContact} onChange={(event) => setPublicColleagueContact(event.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="10-digit mobile number" required /></div>
+                    <div><label htmlFor="public-address">Residential address</label><textarea id="public-address" value={publicResidentialAddress} onChange={(event) => setPublicResidentialAddress(event.target.value)} maxLength={1000} rows={3} required /></div>
+                    <div><label htmlFor="public-colleague-eid">Colleague Enterprise ID</label><input id="public-colleague-eid" value={publicColleagueEnterpriseId} onChange={(event) => setPublicColleagueEnterpriseId(event.target.value)} maxLength={100} required /></div>
+                    <div><label htmlFor="public-family-name">Family emergency contact name</label><input id="public-family-name" value={publicFamilyContactName} onChange={(event) => setPublicFamilyContactName(event.target.value)} maxLength={200} required /></div>
+                    <div><label htmlFor="public-family-relation">Family emergency contact relation</label><input id="public-family-relation" value={publicFamilyContactRelation} onChange={(event) => setPublicFamilyContactRelation(event.target.value)} maxLength={100} placeholder="e.g. Parent, Spouse, Sibling" required /></div>
+                  </div>
+                  <p className="public-registration-note">Your registration remains Pending until event registration staff review and approve it.</p>
+                  <button className="attendee-save-button" type="submit" disabled={publicSubmitting}>
+                    {publicSubmitting ? 'Submitting...' : 'Submit registration'}
+                  </button>
+                </form>
+              </>
+            )}
+          </div>
+        </section>
+      ) : (
+        <section className="login-layout">
+          <div className="login-intro">
+            <p className="section-kicker">THE TEAM BEHIND THE MAGIC</p>
+            <h1>Every great<br />event starts<br /><span>with a team.</span></h1>
+            <p className="login-description">Your event. Your team. One unforgettable celebration. Sign in to access the Champion Celebration staff portal.</p>
+            <div className="login-promise"><span className="promise-icon">*</span><div><strong>One team. One celebration.</strong><p>Event operations, made simple.</p></div></div>
+          </div>
+          <div className="login-card">
+            <div className="card-emblem">CC</div>
+            <p className="section-kicker">WELCOME BACK</p><h2>Staff sign in</h2>
+            <p className="card-description">Enter your staff credentials to continue.</p>
+            <form onSubmit={handleSubmit}>
+              <label htmlFor="staffId">Staff ID</label>
+              <input id="staffId" name="staffId" type="text" autoComplete="username" placeholder="Enter your staff ID" value={staffId} onChange={(event) => { setStaffId(event.target.value); setMessage('') }} maxLength={100} required disabled={isLoading} />
+              <label htmlFor="password">Password</label>
+              <div className="password-field">
+                <input id="password" name="password" type={showPassword ? 'text' : 'password'} autoComplete="current-password" placeholder="Enter your password" value={password} onChange={(event) => { setPassword(event.target.value); setMessage('') }} maxLength={256} required disabled={isLoading} />
+                <button className="show-password" type="button" onClick={() => setShowPassword((visible) => !visible)} aria-label={showPassword ? 'Hide password' : 'Show password'} aria-pressed={showPassword} disabled={isLoading}>{showPassword ? 'HIDE' : 'SHOW'}</button>
+              </div>
+              <button className="explore-button login-button" type="submit" disabled={isLoading}>{isLoading ? 'Signing in...' : 'Sign in'}{!isLoading && <span>-&gt;</span>}</button>
+            </form>
+            <div className="public-registration-entry">
+              <a href="/?register=1" className="public-registration-link" style={{ display: 'inline-flex', gap: '8px', marginTop: '18px', color: '#9a7138', fontWeight: 700, textDecoration: 'none' }}>Employee registration <span aria-hidden="true">-&gt;</span></a>
             </div>
-
-            <button className="explore-button login-button" type="submit" disabled={isLoading}>{isLoading ? 'Signing in...' : 'Sign in'}{!isLoading && <span>-&gt;</span>}</button>
-
-          </form>
-
-          {message && <p className="login-message" role="alert" aria-live="polite">{message}</p>}
-
-          <div className="security-note"><span>*</span><span>Authorised event staff only</span></div>
-
-        </div>
-
-      </section>
-
+            {message && <p className="login-message" role="alert" aria-live="polite">{message}</p>}
+            <div className="security-note"><span>*</span><span>Authorised event staff only</span></div>
+          </div>
+        </section>
+      )}
       <footer className="site-footer"><span>CHAMPION CELEBRATION</span><span>MADE FOR CHAMPIONS <span className="gold-star">*</span></span></footer>
 
     </main>
@@ -2457,3 +2805,33 @@ function App() {
 }
 
 export default App
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

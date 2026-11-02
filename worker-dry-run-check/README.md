@@ -1,0 +1,1 @@
+This folder contains the built output assets for the worker "champion-celebration-demo" generated at 2026-10-27T09:42:32.693Z.

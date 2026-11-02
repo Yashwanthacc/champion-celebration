@@ -1,0 +1,133 @@
+﻿diff --git "a/C:\\Users\\yaswanth.kondramutla\\Downloads\\champion-celebration-git-sync\\src\\App.css" "b/C:\\Users\\yaswanth.kondramutla\\Downloads\\champion-celebration-attendee-update\\src\\App.css"
+index 6ce405a..017cb1b 100644
+--- "a/C:\\Users\\yaswanth.kondramutla\\Downloads\\champion-celebration-git-sync\\src\\App.css"
++++ "b/C:\\Users\\yaswanth.kondramutla\\Downloads\\champion-celebration-attendee-update\\src\\App.css"
+@@ -1,2 +1,2 @@
+-∩╗┐
++
+ @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@500;600;700&display=swap');
+@@ -1176,4 +1176,3 @@ input:focus-visible {
+ .attendee-form-grid input:focus,
+-.attendee-form-grid select:focus,
+-.attendee-form-grid textarea:focus {
++.attendee-form-grid select:focus {
+   outline: none;
+@@ -1183,17 +1182,2 @@ input:focus-visible {
+ 
+-.attendee-form-grid textarea {
+-  box-sizing: border-box;
+-  width: 100%;
+-  min-width: 0;
+-  min-height: 68px;
+-  padding: 12px;
+-  border: 1px solid #d6dfed;
+-  border-radius: 7px;
+-  background: #fbfcff;
+-  color: #17243a;
+-  font: inherit;
+-  font-size: 13px;
+-  resize: vertical;
+-}
+-
+ .attendee-form-actions {
+@@ -1440,3 +1424,3 @@ input:focus-visible {
+ /* ==========================================
+-   CHAMPION CELEBRATION ├óΓé¼ΓÇ¥ SUCCESS ANIMATIONS
++   CHAMPION CELEBRATION ΓÇö SUCCESS ANIMATIONS
+    ========================================== */
+@@ -1507,3 +1491,3 @@ input:focus-visible {
+ /* ==========================================================================
+-   CHAMPION CELEBRATION ├óΓé¼ΓÇ¥ MIDNIGHT GALA REDESIGN
++   CHAMPION CELEBRATION ΓÇö MIDNIGHT GALA REDESIGN
+    Visual-only layer: preserves the existing React workflows and API calls.
+@@ -1977,3 +1961,3 @@ input, select, textarea { accent-color: #e8c778; }
+ /* ==========================================================================
+-   MIDNIGHT GALA ├óΓé¼ΓÇ¥ HIGH-CONTRAST CONTENT & COLORFUL CARDS PATCH
++   MIDNIGHT GALA ΓÇö HIGH-CONTRAST CONTENT & COLORFUL CARDS PATCH
+    Appended overrides only; does not change React logic or API behavior.
+@@ -2922,85 +2906 @@ textarea {
+ }
+-
+-
+-/* Emergency scanner: prominent, responsive, read-only attendee lookup. */
+-.cc-emergency-action {
+-  border-color: #efb3b3;
+-  background: linear-gradient(115deg, #fff7f7 0%, #ffffff 78%);
+-}
+-.cc-emergency-action:hover {
+-  border-color: #d94141;
+-  background: #fff1f1;
+-}
+-.cc-emergency-icon {
+-  border-color: #f2b7b7;
+-  background: #b91c1c;
+-  color: #fff;
+-  font-weight: 800;
+-  font-size: 25px;
+-}
+-.cc-emergency-page h1 span { color: #b91c1c; }
+-.cc-emergency-page .cc-inventory-panel { margin-top: 18px; }
+-.cc-emergency-page #cc-emergency-qr-reader {
+-  width: 100%;
+-  max-width: 520px;
+-  min-height: 20px;
+-  margin: 0 auto 16px;
+-  overflow: hidden;
+-  border-radius: 12px;
+-}
+-.cc-emergency-page .cc-emergency-result { border-top: 4px solid #b91c1c; }
+-.cc-emergency-details {
+-  display: grid;
+-  grid-template-columns: repeat(2, minmax(0, 1fr));
+-  gap: 0 20px;
+-}
+-.cc-emergency-details p {
+-  display: flex;
+-  flex-direction: column;
+-  gap: 5px;
+-  min-width: 0;
+-  padding: 12px 0;
+-  margin: 0;
+-  border-bottom: 1px solid #e8edf5;
+-}
+-.cc-emergency-details p strong { color: #52627a; font-size: 12px; font-weight: 650; }
+-.cc-emergency-details p span { color: #17243a; font-size: 15px; overflow-wrap: anywhere; }
+-.cc-emergency-mypmo {
+-  margin: 12px 0;
+-  padding: 14px;
+-  border: 1px solid #dce6f5;
+-  border-radius: 10px;
+-  background: #f8fbff;
+-}
+-.cc-emergency-mypmo p { margin: 5px 0; overflow-wrap: anywhere; }
+-@media (max-width: 700px) {
+-  .cc-emergency-details { grid-template-columns: minmax(0, 1fr); }
+-  .cc-emergency-page .cc-scanner-controls { flex-wrap: wrap; }
+-}
+-
+-/* Emergency Scanner ├óΓé¼ΓÇ¥ high-contrast text correction */
+-.cc-emergency-page .cc-emergency-result,
+-.cc-emergency-page .cc-emergency-result p,
+-.cc-emergency-page .cc-emergency-result div {
+-  color: #f3f6fc !important;
+-}
+-.cc-emergency-page .cc-emergency-details p {
+-  border-bottom-color: rgba(220, 230, 245, 0.24) !important;
+-}
+-.cc-emergency-page .cc-emergency-details p strong {
+-  color: #c5d2e8 !important;
+-}
+-.cc-emergency-page .cc-emergency-details p span {
+-  color: #ffffff !important;
+-}
+-.cc-emergency-page .cc-emergency-mypmo {
+-  background: #f8fbff !important;
+-  color: #17243a !important;
+-  border-color: #dce6f5 !important;
+-}
+-.cc-emergency-page .cc-emergency-mypmo p,
+-.cc-emergency-page .cc-emergency-mypmo strong,
+-.cc-emergency-page .cc-emergency-mypmo span {
+-  color: #17243a !important;
+-}
+-
