@@ -2,6 +2,7 @@
 
 import { verifyPassword } from './passwords'
 
+import * as XLSX from 'xlsx'
 
 import { createSessionToken, hashSessionToken } from './sessions'
 
@@ -273,7 +274,7 @@ export default {
           eid,
           name,
           email,
-          '', // Department is intentionally left blank; do not infer it from Project.
+          project,
           contactNumber,
           emergencyContact,
           colleagueContact,
@@ -312,7 +313,7 @@ export default {
 
     if (apiPath === '/api/wristbands') return json({error:'Legacy QR wristbands are disabled. Use preprinted inventory bands.'},410)
 
-    // OPTION 2 ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â separate inventory-first wristbands. Legacy /api/wristbands remains unchanged.
+    // OPTION 2 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â separate inventory-first wristbands. Legacy /api/wristbands remains unchanged.
 
     if (apiPath === '/api/admin/operations-dashboard' && request.method === 'GET') {
       if (staff.role !== 'admin') {
@@ -678,28 +679,84 @@ export default {
         return json({ error: 'You do not have permission to import MyPMO data' }, 403)
       }
 
-      if (!request.headers.get('content-type')?.toLowerCase().includes('application/json')) {
-        return json({ error: 'Expected employee records as JSON' }, 415)
+      const maxFileBytes = 10 * 1024 * 1024
+      const contentLength = Number(request.headers.get('content-length') || '0')
+
+      if (contentLength > maxFileBytes + 100_000) {
+        return json({ error: 'Upload is too large. Maximum Excel file size is 10 MB.' }, 413)
       }
 
-      const contentLength = Number(request.headers.get('content-length') || '0')
-      if (contentLength > 25 * 1024 * 1024) {
-        return json({ error: 'Import data is too large.' }, 413)
+      if (!request.headers.get('content-type')?.toLowerCase().includes('multipart/form-data')) {
+        return json({ error: 'Upload an Excel file using multipart/form-data' }, 415)
       }
 
       try {
-        const payload = await request.json() as { employees?: unknown }
-        if (!Array.isArray(payload.employees) || payload.employees.length === 0) {
-          return json({ error: 'No employee records were provided.' }, 400)
+        const form = await request.formData()
+        const file = form.get('file')
+
+        if (!(file instanceof File)) {
+          return json({ error: 'Select an Excel file in the file field' }, 400)
         }
 
-        if (payload.employees.length > 20000) {
-          return json({ error: 'Maximum 20,000 employee rows are allowed.' }, 400)
+        if (file.size === 0 || file.size > maxFileBytes) {
+          return json({ error: 'Excel file must be between 1 byte and 10 MB' }, 413)
+        }
+
+        const lowerName = file.name.toLowerCase()
+        if (!lowerName.endsWith('.xlsx') && !lowerName.endsWith('.xls')) {
+          return json({ error: 'Only .xlsx and .xls files are accepted' }, 400)
+        }
+
+        const bytes = new Uint8Array(await file.arrayBuffer())
+        const workbook = XLSX.read(bytes, { type: 'array', cellDates: false })
+
+        if (!workbook.SheetNames.length) {
+          return json({ error: 'The workbook has no worksheets' }, 400)
+        }
+
+        const sheet = workbook.Sheets[workbook.SheetNames[0]]
+        if (!sheet) {
+          return json({ error: 'Could not read the first worksheet' }, 400)
+        }
+
+        const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+          defval: '',
+          raw: false
+        })
+
+        if (!rows.length) {
+          return json({ error: 'The first worksheet contains no employee rows' }, 400)
+        }
+
+        const requiredHeaders = [
+          'EnterpriseId',
+          'ResourceName',
+          'InternetMail',
+          'Project',
+          'Reporting Line Manager'
+        ]
+
+        const actualHeaders = new Set(
+          XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+            header: 1,
+            defval: '',
+            blankrows: false
+          })[0]?.map(value => String(value).trim()) ?? []
+        )
+
+        const missingHeaders = requiredHeaders.filter(header => !actualHeaders.has(header))
+        if (missingHeaders.length) {
+          return json({
+            error: 'The workbook is missing required column headers',
+            missingHeaders
+          }, 400)
+        }
+
+        if (rows.length > 20000) {
+          return json({ error: 'The workbook contains too many rows. Maximum is 20,000.' }, 400)
         }
 
         const seenIds = new Set<string>()
-        const duplicateRows: number[] = []
-        const invalidRows: Array<{ row: number; enterpriseId: string; reason: string }> = []
         const employees: Array<{
           enterpriseId: string
           fullName: string
@@ -709,48 +766,41 @@ export default {
           projectLead: string
         }> = []
 
-        for (let index = 0; index < payload.employees.length; index++) {
-          const item = payload.employees[index]
-          if (!item || typeof item !== 'object') {
-            return json({ error: `Invalid employee record at row ${index + 2}` }, 400)
-          }
-
-          const row = item as Record<string, unknown>
-          const enterpriseId = String(row.enterpriseId ?? '').trim()
-          const fullName = String(row.fullName ?? '').trim()
-          const email = String(row.email ?? '').trim().toLowerCase()
-          const contactNumber = String(row.contactNumber ?? '').trim()
-          const project = String(row.project ?? '').trim()
-          const projectLead = String(row.projectLead ?? '').trim()
-          const sourceRow = Number(row.sourceRow) || index + 2
+        for (let index = 0; index < rows.length; index++) {
+          const row = rows[index]
+          const enterpriseId = String(row.EnterpriseId ?? '').trim()
+          const fullName = String(row.ResourceName ?? '').trim()
+          const email = String(row.InternetMail ?? '').trim().toLowerCase()
+          const contactNumber = String(row.MobilePhone ?? '').trim()
+          const project = String(row.Project ?? '').trim()
+          const projectLead = String(row['Reporting Line Manager'] ?? '').trim()
 
           if (!enterpriseId || enterpriseId.length > 100) {
-            invalidRows.push({ row: sourceRow, enterpriseId, reason: 'Invalid or missing EnterpriseId' })
-            continue
+            return json({ error: `Invalid EnterpriseId at worksheet data row ${index + 2}` }, 400)
           }
+
           if (!fullName || fullName.length > 200) {
-            invalidRows.push({ row: sourceRow, enterpriseId, reason: 'Invalid or missing ResourceName' })
-            continue
+            return json({ error: `Invalid ResourceName at worksheet data row ${index + 2}` }, 400)
           }
+
           if (!email || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-            invalidRows.push({ row: sourceRow, enterpriseId, reason: 'Invalid or missing InternetMail' })
-            continue
+            return json({ error: `Invalid InternetMail at worksheet data row ${index + 2}` }, 400)
           }
+
           if (contactNumber.length > 50 || project.length > 200 || projectLead.length > 200) {
-            invalidRows.push({ row: sourceRow, enterpriseId, reason: 'A field exceeds its maximum length' })
-            continue
+            return json({ error: `A field is too long at worksheet data row ${index + 2}` }, 400)
           }
 
           const normalizedId = enterpriseId.toLowerCase()
           if (seenIds.has(normalizedId)) {
-            duplicateRows.push(sourceRow)
-            continue
+            return json({ error: `Duplicate EnterpriseId found at worksheet data row ${index + 2}` }, 400)
           }
 
           seenIds.add(normalizedId)
           employees.push({ enterpriseId, fullName, email, contactNumber, project, projectLead })
         }
 
+        // Validate the entire workbook before writing. Upsert only the MyPMO lookup table.
         const statements = employees.map(employee =>
           env.DB.prepare(`
             INSERT INTO mypmo_resources
@@ -773,6 +823,7 @@ export default {
           )
         )
 
+        // Keep each D1 batch manageable for larger daily files.
         for (let offset = 0; offset < statements.length; offset += 100) {
           await env.DB.batch(statements.slice(offset, offset + 100))
         }
@@ -780,17 +831,14 @@ export default {
         return json({
           ok: true,
           imported: employees.length,
-          skippedDuplicates: duplicateRows.length,
-          duplicateRows,
-          skippedInvalid: invalidRows.length,
-          invalidRows,
-          message: `MyPMO import completed. ${employees.length} employees processed; ${duplicateRows.length} duplicate rows and ${invalidRows.length} invalid rows skipped. Existing attendee and check-in records were not changed.`
+          message: 'MyPMO data imported. Existing attendee and check-in records were not changed.'
         })
       } catch (error) {
         console.error('MYPMO_IMPORT_ERROR', error instanceof Error ? error.message : 'Unknown error')
-        return json({ error: 'Could not process the MyPMO import. Check the data and try again.' }, 400)
+        return json({ error: 'Could not import the workbook. Check its format and try again.' }, 400)
       }
     }
+
     if (apiPath === '/api/mypmo/lookup' && request.method === 'GET') {
       if (!canRegister(staff)) {
         return json({ error: 'You do not have permission to look up MyPMO records' }, 403)
@@ -1027,24 +1075,48 @@ export default {
 
       const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : ''
 
-      // Keep Department and Project independent. MyPMO supplies Project only.
-      const project = typeof body.project === 'string' ? body.project.trim() : ''
-      const department = typeof body.department === 'string' ? body.department.trim() : ''
+      const project = typeof body.project === 'string' ? body.project.trim() : (typeof body.department === 'string' ? body.department.trim() : '')
+      const department = project
       let contactNumber = typeof body.contact_number === 'string' ? body.contact_number.trim() : ''
       let emergencyContact = typeof body.family_emergency_contact_number === 'string' ? body.family_emergency_contact_number.trim() : ''
       let colleagueContact = typeof body.colleague_emergency_contact_number === 'string' ? body.colleague_emergency_contact_number.trim() : ''
       let projectLead = typeof body.project_lead === 'string' ? body.project_lead.trim() : ''
+      const addResidentialAddress = typeof body.residential_address === 'string' ? body.residential_address.trim() : ''
+      const addColleagueEnterpriseId = typeof body.colleague_enterprise_id === 'string' ? body.colleague_enterprise_id.trim() : ''
+      const addFamilyContactName = typeof body.family_emergency_contact_name === 'string' ? body.family_emergency_contact_name.trim() : ''
+      const addFamilyContactRelation = typeof body.family_emergency_contact_relation === 'string' ? body.family_emergency_contact_relation.trim() : ''
       const status = body.status === undefined ? 'Registered' : body.status
 
-      if (!eid || eid.length > 100 || !name || name.length > 200 || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || (!project && !department) || project.length > 150 || department.length > 150 || contactNumber.length > 30 || emergencyContact.length > 30 || colleagueContact.length > 30 || projectLead.length > 150 || !['Registered', 'Pending', 'Cancelled'].includes(typeof status === 'string' ? status : '')) return json({ error: 'Please provide valid attendee details' }, 400)
+      if (!eid || eid.length > 100 || !name || name.length > 200 || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !project || project.length > 150 || contactNumber.length > 30 || emergencyContact.length > 30 || colleagueContact.length > 30 || projectLead.length > 150 || !['Registered', 'Pending', 'Cancelled'].includes(typeof status === 'string' ? status : '')) return json({ error: 'Please provide valid attendee details' }, 400)
 
       try {
 
-        if (request.method === 'POST') await env.DB.prepare("INSERT INTO attendees (eid, name, email, department, contact_number, family_emergency_contact_number, colleague_emergency_contact_number, project, project_lead, status, registration_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'MANUAL')").bind(eid, name, email, department, contactNumber, emergencyContact, colleagueContact, project, projectLead, status as AttendeeStatus).run()
+        if (request.method === 'POST') {
+          if (
+            !addResidentialAddress || addResidentialAddress.length > 1000 ||
+            !addColleagueEnterpriseId || addColleagueEnterpriseId.length > 100 ||
+            !addFamilyContactName || addFamilyContactName.length > 200 ||
+            !addFamilyContactRelation || addFamilyContactRelation.length > 100 ||
+            !/^\d{10}$/.test(contactNumber) ||
+            !/^\d{10}$/.test(emergencyContact) ||
+            !/^\d{10}$/.test(colleagueContact)
+          ) {
+            return json({ error: 'Please complete all required fields. Phone numbers must contain exactly 10 digits.' }, 400)
+          }
+
+          await env.DB.prepare(
+            "INSERT INTO attendees (eid, name, email, department, contact_number, family_emergency_contact_number, colleague_emergency_contact_number, project, project_lead, residential_address, colleague_enterprise_id, family_emergency_contact_name, family_emergency_contact_relation, status, registration_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'MANUAL')"
+          ).bind(
+            eid, name, email, department, contactNumber, emergencyContact,
+            colleagueContact, project, projectLead, addResidentialAddress,
+            addColleagueEnterpriseId, addFamilyContactName,
+            addFamilyContactRelation, status as AttendeeStatus,
+          ).run()
+        }
 
         else {
 
-          const existing = await env.DB.prepare('SELECT eid, status, department, contact_number, family_emergency_contact_number, colleague_emergency_contact_number, project, project_lead, residential_address, colleague_enterprise_id, family_emergency_contact_name, family_emergency_contact_relation FROM attendees WHERE eid = ?').bind(eid).first<{ eid: string; status: AttendeeStatus; department: string; contact_number: string | null; family_emergency_contact_number: string | null; colleague_emergency_contact_number: string | null; project: string | null; project_lead: string | null; residential_address: string | null; colleague_enterprise_id: string | null; family_emergency_contact_name: string | null; family_emergency_contact_relation: string | null }>()
+          const existing = await env.DB.prepare('SELECT eid, status, contact_number, family_emergency_contact_number, colleague_emergency_contact_number, project, project_lead, residential_address, colleague_enterprise_id, family_emergency_contact_name, family_emergency_contact_relation FROM attendees WHERE eid = ?').bind(eid).first<{ eid: string; status: AttendeeStatus; contact_number: string | null; family_emergency_contact_number: string | null; colleague_emergency_contact_number: string | null; project: string | null; project_lead: string | null; residential_address: string | null; colleague_enterprise_id: string | null; family_emergency_contact_name: string | null; family_emergency_contact_relation: string | null }>()
 
           if (!existing) return json({ error: 'Attendee not found' }, 404)
           // Legacy edit screens do not submit the new fields; preserve them unless explicitly supplied.
@@ -1060,9 +1132,7 @@ export default {
           const familyContactName = typeof body.family_emergency_contact_name === 'string' ? body.family_emergency_contact_name.trim() : existing.family_emergency_contact_name || ''
           const familyContactRelation = typeof body.family_emergency_contact_relation === 'string' ? body.family_emergency_contact_relation.trim() : existing.family_emergency_contact_relation || ''
 
-          const nextDepartment = typeof body.department === 'string' ? department : (existing.department || '')
-          const nextProject = typeof body.project === 'string' ? project : (existing.project || '')
-          await env.DB.prepare('UPDATE attendees SET name = ?, email = ?, department = ?, contact_number = ?, family_emergency_contact_number = ?, colleague_emergency_contact_number = ?, project = ?, project_lead = ?, residential_address = ?, colleague_enterprise_id = ?, family_emergency_contact_name = ?, family_emergency_contact_relation = ?, status = ? WHERE eid = ?').bind(name, email, nextDepartment, contactNumber, emergencyContact, colleagueContact, nextProject, projectLead, residentialAddress, colleagueEnterpriseId, familyContactName, familyContactRelation, existing.status, eid).run()
+          await env.DB.prepare('UPDATE attendees SET name = ?, email = ?, department = ?, contact_number = ?, family_emergency_contact_number = ?, colleague_emergency_contact_number = ?, project = ?, project_lead = ?, residential_address = ?, colleague_enterprise_id = ?, family_emergency_contact_name = ?, family_emergency_contact_relation = ?, status = ? WHERE eid = ?').bind(name, email, department || existing.project || '', contactNumber, emergencyContact, colleagueContact, project || existing.project || '', projectLead, residentialAddress, colleagueEnterpriseId, familyContactName, familyContactRelation, existing.status, eid).run()
 
         }
 
@@ -1239,7 +1309,6 @@ export default {
   },
 
 } satisfies ExportedHandler<Env>
-
 
 
 

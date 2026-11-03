@@ -512,6 +512,10 @@ function App() {
   const [newEmergencyContact, setNewEmergencyContact] = useState('')
   const [newColleagueContact, setNewColleagueContact] = useState('')
   const [newPeopleLead, setNewPeopleLead] = useState('')
+  const [newResidentialAddress, setNewResidentialAddress] = useState('')
+  const [newColleagueEnterpriseId, setNewColleagueEnterpriseId] = useState('')
+  const [newFamilyContactName, setNewFamilyContactName] = useState('')
+  const [newFamilyContactRelation, setNewFamilyContactRelation] = useState('')
   const [attendeeLookupMessage, setAttendeeLookupMessage] = useState('')
   const [attendeeLookupBusy, setAttendeeLookupBusy] = useState(false)
   // Public employee registration
@@ -562,8 +566,8 @@ function App() {
 
     setPublicError('')
 
-    if (!publicEid.trim() || !publicName.trim() || !publicProject.trim()) {
-      setPublicError('Enterprise ID, full name and project are required.')
+    if (!publicEid.trim() || !publicName.trim() || !publicProject.trim() || !publicProjectLead.trim() || !publicColleagueEnterpriseId.trim() || !publicFamilyContactName.trim() || !publicFamilyContactRelation.trim() || !publicResidentialAddress.trim()) {
+      setPublicError('Please complete all required fields.')
       return
     }
 
@@ -745,6 +749,11 @@ function App() {
     setNewEmergencyContact('')
     setNewColleagueContact('')
     setNewPeopleLead('')
+    setNewResidentialAddress('')
+    setNewColleagueEnterpriseId('')
+    setNewFamilyContactName('')
+    setNewFamilyContactRelation('')
+    setAttendeeLookupMessage('')
 
     setAttendeeFormError('')
 
@@ -808,13 +817,28 @@ function App() {
     const emergencyContact = newEmergencyContact.trim()
     const colleagueContact = newColleagueContact.trim()
     const peopleLead = newPeopleLead.trim()
+    const residentialAddress = newResidentialAddress.trim()
+    const colleagueEnterpriseId = newColleagueEnterpriseId.trim()
+    const familyContactName = newFamilyContactName.trim()
+    const familyContactRelation = newFamilyContactRelation.trim()
 
-    if (!eid || !name || !email || !project || !contactNumber || !emergencyContact || !colleagueContact || !peopleLead) {
-
-      setAttendeeFormError('Please complete all fields.')
-
+    if (
+      !eid || !name || !email || !project || !peopleLead ||
+      !contactNumber || !emergencyContact || !colleagueContact ||
+      !residentialAddress || !colleagueEnterpriseId ||
+      !familyContactName || !familyContactRelation
+    ) {
+      setAttendeeFormError('Please complete all required fields.')
       return
+    }
 
+    if (
+      !/^\d{10}$/.test(contactNumber) ||
+      !/^\d{10}$/.test(emergencyContact) ||
+      !/^\d{10}$/.test(colleagueContact)
+    ) {
+      setAttendeeFormError('All three contact numbers must contain exactly 10 digits.')
+      return
     }
 
     const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -855,7 +879,18 @@ function App() {
 
         credentials: 'same-origin',
 
-        body: JSON.stringify({ eid, name, email, department: project, project, contact_number: contactNumber, family_emergency_contact_number: emergencyContact, colleague_emergency_contact_number: colleagueContact, project_lead: peopleLead, status: 'Registered' }),
+        body: JSON.stringify({
+          eid, name, email, department: project, project,
+          contact_number: contactNumber,
+          family_emergency_contact_number: emergencyContact,
+          colleague_emergency_contact_number: colleagueContact,
+          project_lead: peopleLead,
+          residential_address: residentialAddress,
+          colleague_enterprise_id: colleagueEnterpriseId,
+          family_emergency_contact_name: familyContactName,
+          family_emergency_contact_relation: familyContactRelation,
+          status: 'Registered',
+        }),
 
       })
 
@@ -1543,7 +1578,6 @@ function App() {
   async function handleMyPmoUpload() {
     setMypmoUploadMessage('')
     setMypmoUploadError('')
-
     if (!mypmoFile) {
       setMypmoUploadError('Choose an Excel workbook first.')
       return
@@ -1552,121 +1586,25 @@ function App() {
       setMypmoUploadError('Choose an .xlsx or .xls workbook.')
       return
     }
-    if (mypmoFile.size === 0 || mypmoFile.size > 10 * 1024 * 1024) {
-      setMypmoUploadError('Excel file must be between 1 byte and 10 MB.')
-      return
-    }
 
     setMypmoUploadBusy(true)
     try {
-      const workbook = XLSX.read(await mypmoFile.arrayBuffer(), {
-        type: 'array',
-        cellDates: false,
-      })
-
-      if (!workbook.SheetNames.length) {
-        throw new Error('The workbook has no worksheets.')
-      }
-
-      const sheet = workbook.Sheets[workbook.SheetNames[0]]
-      if (!sheet) {
-        throw new Error('Could not read the first worksheet.')
-      }
-
-      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
-        defval: '',
-        raw: false,
-      })
-
-      if (!rows.length) {
-        throw new Error('The first worksheet contains no employee rows.')
-      }
-      if (rows.length > 20000) {
-        throw new Error('The workbook contains too many rows. Maximum is 20,000.')
-      }
-
-      const headerRow = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
-        header: 1,
-        defval: '',
-        blankrows: false,
-      })[0] ?? []
-
-      const headerMap = new Map<string, string>()
-      for (const value of headerRow) {
-        const header = String(value ?? '').trim()
-        if (header) headerMap.set(header.toLowerCase(), header)
-      }
-
-      const hasHeader = (name: string) => headerMap.has(name.toLowerCase())
-      const missingHeaders = ['EnterpriseId', 'ResourceName', 'InternetMail']
-        .filter(header => !hasHeader(header))
-
-      if (!hasHeader('Project') && !hasHeader('SOWName')) {
-        missingHeaders.push('Project (Aspire) or SOWName (IX)')
-      }
-      if (missingHeaders.length) {
-        throw new Error(`Workbook is missing required headers: ${missingHeaders.join(', ')}`)
-      }
-
-      const leadHeader = [
-        'Reporting Line Manager',
-        'PeopleLead(Workday)',
-        'ContractLead',
-        'FunctionLead',
-        'Supervisor',
-      ].find(hasHeader) ?? ''
-
-      const getCell = (row: Record<string, unknown>, ...names: string[]) => {
-        for (const name of names) {
-          const actual = headerMap.get(name.toLowerCase())
-          if (actual && row[actual] !== undefined && row[actual] !== null &&
-              String(row[actual]).trim() !== '') {
-            return String(row[actual]).trim()
-          }
-        }
-        return ''
-      }
-
-      const employees = rows.map((row, index) => ({
-        enterpriseId: getCell(row, 'EnterpriseId'),
-        fullName: getCell(row, 'ResourceName'),
-        email: getCell(row, 'InternetMail').toLowerCase(),
-        contactNumber: getCell(row, 'MobilePhone', 'PhoneNumber', 'ContactNumber'),
-        project: getCell(row, 'Project', 'SOWName'),
-        projectLead: leadHeader ? getCell(row, leadHeader) : '',
-        sourceRow: index + 2,
-      }))
-
+      const form = new FormData()
+      form.append('file', mypmoFile)
       const response = await fetch('/api/mypmo/upload', {
         method: 'POST',
         credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ employees }),
+        body: form,
       })
-
-      const responseText = await response.text()
-      let result: {
+      const result = await response.json() as {
         ok?: boolean
         imported?: number
-        skippedDuplicates?: number
-        duplicateRows?: number[]
         message?: string
         error?: string
       }
-
-      try {
-        result = JSON.parse(responseText)
-      } catch {
-        const preview = responseText.replace(/\s+/g, ' ').slice(0, 240)
-        throw new Error(
-          `MyPMO API returned ${response.status} non-JSON content: ${preview || '(empty response)'}`,
-        )
-      }
-
       if (!response.ok || !result.ok) {
         throw new Error(result.error || result.message || 'Upload failed.')
       }
-
       setMypmoUploadMessage(
         result.message || `Imported ${result.imported ?? 0} employees successfully.`,
       )
@@ -1679,6 +1617,7 @@ function App() {
       setMypmoUploadBusy(false)
     }
   }
+
   async function handleMyPmoLookup() {
     const eid = mypmoEid.trim()
     setMypmoLookupMessage('')
@@ -2398,20 +2337,70 @@ function App() {
                   {attendeeFormError && <p className="attendee-form-error" role="alert">{attendeeFormError}</p>}
 
                   <div className="attendee-form-grid">
+                    <div style={{ gridColumn: '1 / -1' }}>
+                      <p className="section-kicker">EMPLOYEE DETAILS</p>
+                    </div>
+                    <div>
+                      <label htmlFor="new-eid">Enterprise ID</label>
+                      <input id="new-eid" value={newEid} onChange={(event) => { setNewEid(event.target.value); setAttendeeLookupMessage('') }} onBlur={(event) => { void handleAttendeeEidLookup(event.target.value) }} placeholder="Enter Enterprise ID" maxLength={100} required />
+                      <p className="login-description" role="status">{attendeeLookupBusy ? 'Looking up employee...' : attendeeLookupMessage}</p>
+                    </div>
+                    <div>
+                      <label htmlFor="new-name">Full name</label>
+                      <input id="new-name" value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="Enter full name" maxLength={200} required />
+                    </div>
+                    <div>
+                      <label htmlFor="new-email">Company email address</label>
+                      <input id="new-email" type="email" value={newEmail} onChange={(event) => setNewEmail(event.target.value)} placeholder="name@example.com" maxLength={254} required />
+                    </div>
+                    <div>
+                      <label htmlFor="new-project">Project</label>
+                      <input id="new-project" value={newProject} onChange={(event) => setNewProject(event.target.value)} placeholder="e.g. Roche Aspire" maxLength={150} required />
+                    </div>
+                    <div>
+                      <label htmlFor="new-people-lead">Project Lead</label>
+                      <input id="new-people-lead" value={newPeopleLead} onChange={(event) => setNewPeopleLead(event.target.value)} placeholder="Enter Project Lead" maxLength={150} required />
+                    </div>
+                    <div>
+                      <label htmlFor="new-contact-number">Contact number</label>
+                      <input id="new-contact-number" type="tel" inputMode="numeric" value={newContactNumber} onChange={(event) => setNewContactNumber(event.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="10-digit mobile number" maxLength={10} pattern="[0-9]{10}" required />
+                    </div>
 
-                    <div><label htmlFor="new-eid">Employee ID</label><input id="new-eid" value={newEid} onChange={(event) => { setNewEid(event.target.value); setAttendeeLookupMessage('') }} onBlur={(event) => { void handleAttendeeEidLookup(event.target.value) }} placeholder="e.g. DEMO006" maxLength={50} required /></div>
-<p className="login-description" role="status">{attendeeLookupBusy ? 'Looking up employee...' : attendeeLookupMessage}</p>
+                    <div style={{ gridColumn: '1 / -1', marginTop: '12px' }}>
+                      <p className="section-kicker">FAMILY EMERGENCY CONTACT</p>
+                    </div>
+                    <div>
+                      <label htmlFor="new-family-contact-relation">Relationship</label>
+                      <input id="new-family-contact-relation" value={newFamilyContactRelation} onChange={(event) => setNewFamilyContactRelation(event.target.value)} placeholder="e.g. Parent, Spouse, Sibling" maxLength={100} required />
+                    </div>
+                    <div>
+                      <label htmlFor="new-family-contact-name">Emergency contact name</label>
+                      <input id="new-family-contact-name" value={newFamilyContactName} onChange={(event) => setNewFamilyContactName(event.target.value)} placeholder="Enter family contact name" maxLength={200} required />
+                    </div>
+                    <div>
+                      <label htmlFor="new-emergency-contact">Emergency contact number</label>
+                      <input id="new-emergency-contact" type="tel" inputMode="numeric" value={newEmergencyContact} onChange={(event) => setNewEmergencyContact(event.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="10-digit mobile number" maxLength={10} pattern="[0-9]{10}" required />
+                    </div>
 
-                    <div><label htmlFor="new-name">Full name</label><input id="new-name" value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="Enter full name" maxLength={120} required /></div>
+                    <div style={{ gridColumn: '1 / -1', marginTop: '12px' }}>
+                      <p className="section-kicker">COLLEAGUE DETAILS</p>
+                    </div>
+                    <div>
+                      <label htmlFor="new-colleague-enterprise-id">Colleague Enterprise ID</label>
+                      <input id="new-colleague-enterprise-id" value={newColleagueEnterpriseId} onChange={(event) => setNewColleagueEnterpriseId(event.target.value)} placeholder="Enter colleague Enterprise ID" maxLength={100} required />
+                    </div>
+                    <div>
+                      <label htmlFor="new-colleague-contact">Colleague contact number</label>
+                      <input id="new-colleague-contact" type="tel" inputMode="numeric" value={newColleagueContact} onChange={(event) => setNewColleagueContact(event.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="10-digit mobile number" maxLength={10} pattern="[0-9]{10}" required />
+                    </div>
 
-                    <div><label htmlFor="new-email">Email address</label><input id="new-email" type="email" value={newEmail} onChange={(event) => setNewEmail(event.target.value)} placeholder="name\@example.com" maxLength={254} required /></div>
-
-                    <div><label htmlFor="new-project">Project</label><input id="new-project" value={newProject} onChange={(event) => setNewProject(event.target.value)} placeholder="e.g. Roche Aspire" maxLength={150} required /></div>
-                    <div><label htmlFor="new-contact-number">Contact number (editable)</label><input id="new-contact-number" type="tel" value={newContactNumber} onChange={(event) => setNewContactNumber(event.target.value)} placeholder="Employee mobile number" maxLength={30} required /></div>
-                    <div><label htmlFor="new-emergency-contact">Emergency contact number</label><input id="new-emergency-contact" type="tel" value={newEmergencyContact} onChange={(event) => setNewEmergencyContact(event.target.value)} maxLength={30} required /></div>
-                    <div><label htmlFor="new-colleague-contact">Colleague's contact number</label><input id="new-colleague-contact" type="tel" value={newColleagueContact} onChange={(event) => setNewColleagueContact(event.target.value)} maxLength={30} required /></div>
-                    <div><label htmlFor="new-people-lead">People Lead</label><input id="new-people-lead" value={newPeopleLead} onChange={(event) => setNewPeopleLead(event.target.value)} placeholder="People Lead name" maxLength={150} required /></div>
-
+                    <div style={{ gridColumn: '1 / -1', marginTop: '12px' }}>
+                      <p className="section-kicker">RESIDENTIAL DETAILS</p>
+                    </div>
+                    <div style={{ gridColumn: '1 / -1' }}>
+                      <label htmlFor="new-residential-address">Residential address</label>
+                      <textarea id="new-residential-address" value={newResidentialAddress} onChange={(event) => setNewResidentialAddress(event.target.value)} placeholder="Enter complete residential address" maxLength={1000} rows={3} required />
+                    </div>
                   </div>
 
                   <div className="attendee-form-actions">
@@ -2743,20 +2732,38 @@ function App() {
                 <p className="public-registration-intro">Complete your details carefully. Event registration staff will review your submission before confirming your registration.</p>
                 {publicError && <p className="attendee-form-error" role="alert">{publicError}</p>}
                 <form className="public-registration-form" onSubmit={submitPublicRegistration}>
-                  <div className="attendee-form-grid">
-                    <div><label htmlFor="public-eid">Enterprise ID</label><input id="public-eid" value={publicEid} onChange={(event) => setPublicEid(event.target.value)} maxLength={100} required /></div>
-                    <div><label htmlFor="public-name">Full name</label><input id="public-name" value={publicName} onChange={(event) => setPublicName(event.target.value)} maxLength={200} required /></div>
-                    <div><label htmlFor="public-email">Email address</label><input id="public-email" type="email" value={publicEmail} onChange={(event) => setPublicEmail(event.target.value)} maxLength={254} required /></div>
-                    <div><label htmlFor="public-project">Project</label><input id="public-project" value={publicProject} onChange={(event) => setPublicProject(event.target.value)} maxLength={150} required /></div>
-                    <div><label htmlFor="public-project-lead">Project Lead</label><input id="public-project-lead" value={publicProjectLead} onChange={(event) => setPublicProjectLead(event.target.value)} maxLength={150} /></div>
-                    <div><label htmlFor="public-contact">Your contact number</label><input id="public-contact" type="tel" inputMode="numeric" pattern="[0-9]{10}" maxLength={10} value={publicContact} onChange={(event) => setPublicContact(event.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="10-digit mobile number" required /></div>
-                    <div><label htmlFor="public-emergency">Family emergency contact</label><input id="public-emergency" type="tel" inputMode="numeric" pattern="[0-9]{10}" maxLength={10} value={publicEmergencyContact} onChange={(event) => setPublicEmergencyContact(event.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="10-digit mobile number" required /></div>
-                    <div><label htmlFor="public-colleague">Colleague contact number</label><input id="public-colleague" type="tel" inputMode="numeric" pattern="[0-9]{10}" maxLength={10} value={publicColleagueContact} onChange={(event) => setPublicColleagueContact(event.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="10-digit mobile number" required /></div>
-                    <div><label htmlFor="public-address">Residential address</label><textarea id="public-address" value={publicResidentialAddress} onChange={(event) => setPublicResidentialAddress(event.target.value)} maxLength={1000} rows={3} required /></div>
-                    <div><label htmlFor="public-colleague-eid">Colleague Enterprise ID</label><input id="public-colleague-eid" value={publicColleagueEnterpriseId} onChange={(event) => setPublicColleagueEnterpriseId(event.target.value)} maxLength={100} required /></div>
-                    <div><label htmlFor="public-family-name">Family emergency contact name</label><input id="public-family-name" value={publicFamilyContactName} onChange={(event) => setPublicFamilyContactName(event.target.value)} maxLength={200} required /></div>
-                    <div><label htmlFor="public-family-relation">Family emergency contact relation</label><input id="public-family-relation" value={publicFamilyContactRelation} onChange={(event) => setPublicFamilyContactRelation(event.target.value)} maxLength={100} placeholder="e.g. Parent, Spouse, Sibling" required /></div>
-                  </div>
+                  <section className="public-form-section">
+                    <h2>1. Employee details</h2>
+                    <div className="attendee-form-grid">
+                      <div><label htmlFor="public-eid">Enterprise ID *</label><input id="public-eid" value={publicEid} onChange={(event) => setPublicEid(event.target.value)} maxLength={100} required /></div>
+                      <div><label htmlFor="public-name">Full name *</label><input id="public-name" value={publicName} onChange={(event) => setPublicName(event.target.value)} maxLength={200} required /></div>
+                      <div><label htmlFor="public-email">Company email address *</label><input id="public-email" type="email" value={publicEmail} onChange={(event) => setPublicEmail(event.target.value)} maxLength={254} required /></div>
+                      <div><label htmlFor="public-project">Project *</label><input id="public-project" value={publicProject} onChange={(event) => setPublicProject(event.target.value)} maxLength={150} required /></div>
+                      <div><label htmlFor="public-project-lead">Project Lead *</label><input id="public-project-lead" value={publicProjectLead} onChange={(event) => setPublicProjectLead(event.target.value)} maxLength={150} required /></div>
+                      <div><label htmlFor="public-contact">Contact number *</label><input id="public-contact" type="tel" inputMode="numeric" pattern="[0-9]{10}" maxLength={10} value={publicContact} onChange={(event) => setPublicContact(event.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="10-digit mobile number" required /></div>
+                    </div>
+                  </section>
+                  <section className="public-form-section">
+                    <h2>2. Family emergency contact</h2>
+                    <div className="attendee-form-grid">
+                      <div><label htmlFor="public-family-relation">Relationship *</label><input id="public-family-relation" value={publicFamilyContactRelation} onChange={(event) => setPublicFamilyContactRelation(event.target.value)} maxLength={100} placeholder="e.g. Parent, Spouse, Sibling" required /></div>
+                      <div><label htmlFor="public-family-name">Emergency contact name *</label><input id="public-family-name" value={publicFamilyContactName} onChange={(event) => setPublicFamilyContactName(event.target.value)} maxLength={200} required /></div>
+                      <div><label htmlFor="public-emergency">Emergency contact number *</label><input id="public-emergency" type="tel" inputMode="numeric" pattern="[0-9]{10}" maxLength={10} value={publicEmergencyContact} onChange={(event) => setPublicEmergencyContact(event.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="10-digit mobile number" required /></div>
+                    </div>
+                  </section>
+                  <section className="public-form-section">
+                    <h2>3. Colleague details</h2>
+                    <div className="attendee-form-grid">
+                      <div><label htmlFor="public-colleague-eid">Colleague Enterprise ID *</label><input id="public-colleague-eid" value={publicColleagueEnterpriseId} onChange={(event) => setPublicColleagueEnterpriseId(event.target.value)} maxLength={100} required /></div>
+                      <div><label htmlFor="public-colleague">Colleague contact number *</label><input id="public-colleague" type="tel" inputMode="numeric" pattern="[0-9]{10}" maxLength={10} value={publicColleagueContact} onChange={(event) => setPublicColleagueContact(event.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="10-digit mobile number" required /></div>
+                    </div>
+                  </section>
+                  <section className="public-form-section">
+                    <h2>4. Residential details</h2>
+                    <div className="attendee-form-grid">
+                      <div className="public-address-field"><label htmlFor="public-address">Residential address *</label><textarea id="public-address" value={publicResidentialAddress} onChange={(event) => setPublicResidentialAddress(event.target.value)} maxLength={1000} rows={3} required /></div>
+                    </div>
+                  </section>
                   <p className="public-registration-note">Your registration remains Pending until event registration staff review and approve it.</p>
                   <button className="attendee-save-button" type="submit" disabled={publicSubmitting}>
                     {publicSubmitting ? 'Submitting...' : 'Submit registration'}
@@ -2788,9 +2795,6 @@ function App() {
               </div>
               <button className="explore-button login-button" type="submit" disabled={isLoading}>{isLoading ? 'Signing in...' : 'Sign in'}{!isLoading && <span>-&gt;</span>}</button>
             </form>
-            <div className="public-registration-entry">
-              <a href="/?register=1" className="public-registration-link" style={{ display: 'inline-flex', gap: '8px', marginTop: '18px', color: '#9a7138', fontWeight: 700, textDecoration: 'none' }}>Employee registration <span aria-hidden="true">-&gt;</span></a>
-            </div>
             {message && <p className="login-message" role="alert" aria-live="polite">{message}</p>}
             <div className="security-note"><span>*</span><span>Authorised event staff only</span></div>
           </div>
