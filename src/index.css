@@ -17,7 +17,7 @@
 
   font: 18px/145% var(--sans);
   letter-spacing: 0.18px;
-  color-scheme: light;
+  color-scheme: light dark;
   color: var(--text);
   background: var(--bg);
   font-synthesis: none;
@@ -109,8 +109,3 @@ code {
   padding: 4px 8px;
   background: var(--code-bg);
 }
-
-/* Production visual refresh: keep the application canvas light. */
-:root { color-scheme: light; background: #f5f7fb; }
-body { background: #f5f7fb; }
-#root { max-width: none; border-inline: 0; text-align: left; }

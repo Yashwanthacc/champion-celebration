@@ -51,8 +51,18 @@ type Attendee = {
 }
 
 function canManageRegistration(staff: Staff | null) {
-  const id = (staff?.staffId ?? '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '')
-  return staff?.role === 'admin' || ['NEELIMA', 'ANIRUDDHA'].includes(id)
+  return staff?.role === 'admin' || staff?.role === 'registration'
+}
+
+function canManageInventory(staff: Staff | null) {
+  return staff?.role === 'admin' || staff?.role === 'inventory'
+}
+
+function canUseCheckin(staff: Staff | null) {
+  return staff?.role === 'admin' || staff?.role === 'checkin'
+}
+function canAccessEmergencyScanner(staff: Staff | null) {
+  return staff !== null
 }
 type RegistrationFilter = 'All' | Attendee['status']
 type MyPmoEmployee = {
@@ -251,6 +261,8 @@ function App() {
     link.remove()
     URL.revokeObjectURL(url)
   }
+  const [mypmoRosterType, setMypmoRosterType] = useState<'ASPIRE' | 'IX'>('ASPIRE')
+  const [employeeImportRosterType, setEmployeeImportRosterType] = useState<'ASPIRE' | 'IX'>('ASPIRE')
   const [mypmoFile, setMypmoFile] = useState<File | null>(null)
   const [mypmoUploadBusy, setMypmoUploadBusy] = useState(false)
   const [mypmoUploadMessage, setMypmoUploadMessage] = useState('')
@@ -267,7 +279,11 @@ function App() {
     department: string
     contact_number: string
     family_emergency_contact_number: string
+    family_emergency_contact_name: string
+    family_emergency_contact_relation: string
     colleague_emergency_contact_number: string
+    colleague_enterprise_id: string
+    residential_address: string
     project: string
     project_lead: string
     valid: boolean
@@ -285,41 +301,62 @@ function App() {
 
     setEmployeeImportBusy(true)
     setEmployeeImportError('')
-    setEmployeeImportMessage('Importing employee records...')
+    setEmployeeImportMessage('Importing employee records in batches...')
+
+    let totalInserted = 0
+    let totalSkipped = 0
 
     try {
-      const response = await fetch('/api/admin/employee-prereg/import', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({
-          attendees: validRows.map((row) => ({
-            eid: row.eid,
-            name: row.name,
-            email: row.email,
-            department: row.department,
-            project: row.project,
-            contact_number: row.contact_number,
-            family_emergency_contact_number: row.family_emergency_contact_number,
-            colleague_emergency_contact_number: row.colleague_emergency_contact_number,
-            project_lead: row.project_lead,
-          })),
-        }),
-      })
+      for (let offset = 0; offset < validRows.length; offset += 500) {
+        const batch = validRows.slice(offset, offset + 500)
 
-      const result = await response.json() as {
-        ok?: boolean
-        error?: string
-        inserted?: number
-        skipped?: number
-      }
+        const response = await fetch('/api/admin/employee-prereg/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({
+            roster_type: employeeImportRosterType,
+            attendees: batch.map((row) => ({
+              eid: row.eid,
+              name: row.name,
+              email: row.email,
+              department: row.department,
+              project: row.project,
+              contact_number: row.contact_number,
+              family_emergency_contact_number: row.family_emergency_contact_number,
+              family_emergency_contact_name: row.family_emergency_contact_name,
+              family_emergency_contact_relation: row.family_emergency_contact_relation,
+              colleague_emergency_contact_number: row.colleague_emergency_contact_number,
+              colleague_enterprise_id: row.colleague_enterprise_id,
+              residential_address: row.residential_address,
+              project_lead: row.project_lead,
+            })),
+          }),
+        })
 
-      if (!response.ok || !result.ok) {
-        throw new Error(result.error || 'Employee import failed.')
+        const result = await response.json() as {
+          ok?: boolean
+          error?: string
+          inserted?: number
+          skipped?: number
+        }
+
+        if (!response.ok || !result.ok) {
+          throw new Error(
+            `Batch ${Math.floor(offset / 500) + 1} failed: ${result.error || 'Import failed.'} ` +
+            `Previous batches may already have been imported. Retrying is safe because existing IDs/emails are skipped.`
+          )
+        }
+
+        totalInserted += result.inserted ?? 0
+        totalSkipped += result.skipped ?? 0
+        setEmployeeImportMessage(
+          `Processed ${Math.min(offset + batch.length, validRows.length)} of ${validRows.length} rows...`
+        )
       }
 
       setEmployeeImportMessage(
-        `Import completed: ${result.inserted ?? 0} inserted, ${result.skipped ?? 0} skipped.`
+        `Import completed: ${totalInserted} inserted, ${totalSkipped} skipped.`
       )
       setEmployeeImportConfirmed(false)
       await loadAttendees()
@@ -327,7 +364,9 @@ function App() {
       setEmployeeImportError(
         error instanceof Error ? error.message : 'Import failed. Please try again.'
       )
-      setEmployeeImportMessage('')
+      setEmployeeImportMessage(
+        `Progress before error: ${totalInserted} inserted, ${totalSkipped} skipped.`
+      )
     } finally {
       setEmployeeImportBusy(false)
     }
@@ -388,39 +427,33 @@ function App() {
             return ''
           }
 
-          const eid = pick(['eid', 'employeeid', 'enterpriseid', 'employeeidnumber'])
+          const email = pick(['email', 'emailaddress', 'workemail', 'officialemail']).toLowerCase()
+          const emailMatch = email.match(/^([^@\s]+)@accenture\.com$/i)
+          const eid = emailMatch ? emailMatch[1].toLowerCase() :
+            pick(['eid', 'employeeid', 'employeeenterpriseid']).toLowerCase()
           const name = pick(['name', 'fullname', 'employeename', 'respondentname'])
-          const email = pick(['email', 'emailaddress', 'workemail', 'officialemail'])
-          const project = pick(['project', 'projectname', 'department', 'businessunit'])
-          const contact = pick(['contactnumber', 'phonenumber', 'mobile', 'mobilenumber', 'phone'])
-          const familyEmergency = pick([
-            'familyemergencycontactnumber',
-            'familyemergencycontact',
-            'emergencycontactnumber',
-            'emergencycontact',
-          ])
-          const colleagueEmergency = pick([
-            'colleagueemergencycontactnumber',
-            'colleagueemergencycontact',
-          ])
-          const projectLead = pick(['projectlead', 'projectmanager', 'leadname'])
+          const familyName = pick(['name2', 'familyemergencycontactname', 'emergencycontactname'])
+          const familyRelation = pick(['relationship', 'familyemergencycontactrelation', 'emergencycontactrelation'])
+          const familyEmergency = pick(['contactnumber', 'emergencycontactnumber'])
+          const colleagueContact = pick(['contactnumber2', 'colleaguecontactnumber', 'colleagueemergencycontactnumber'])
+          const colleagueEid = pick(['enterpriseid', 'colleagueenterpriseid'])
+          const residentialAddress = pick(['pleaseprovideyourresidentialaddress', 'residentialaddress', 'address'])
+          const project = ''
+          const projectLead = ''
 
           const issues: string[] = []
-          const normalizedEid = eid.toLowerCase()
-          const normalizedEmail = email.toLowerCase()
-
-          if (!eid) issues.push('Missing Employee ID')
-          if (!name) issues.push('Missing name')
           if (!email) {
             issues.push('Missing email')
           } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
             issues.push('Invalid email')
           }
-          if (!project) issues.push('Missing project/department')
+          if (!emailMatch && !eid) issues.push('Cannot derive Employee ID from email')
+          if (!name) issues.push('Missing name')
 
-          if (eid && usedEids.has(normalizedEid)) issues.push('Duplicate Employee ID in file')
-          if (email && usedEmails.has(normalizedEmail)) issues.push('Duplicate email in file')
+          const normalizedEid = eid.toLowerCase()
+          const normalizedEmail = email.toLowerCase()
 
+          // Duplicate rows are safely skipped by the backend.
           if (eid) usedEids.add(normalizedEid)
           if (email) usedEmails.add(normalizedEmail)
 
@@ -429,9 +462,13 @@ function App() {
             name,
             email,
             department: project,
-            contact_number: contact,
+            contact_number: '',
             family_emergency_contact_number: familyEmergency,
-            colleague_emergency_contact_number: colleagueEmergency,
+            family_emergency_contact_name: familyName,
+            family_emergency_contact_relation: familyRelation,
+            colleague_emergency_contact_number: colleagueContact,
+            colleague_enterprise_id: colleagueEid,
+            residential_address: residentialAddress,
             project,
             project_lead: projectLead,
             valid: issues.length === 0,
@@ -768,7 +805,7 @@ function App() {
     setAttendeeLookupBusy(true)
     try {
       const response = await fetch(
-        `/api/mypmo/lookup?eid=${encodeURIComponent(eid)}`,
+        `/api/mypmo/lookup?eid=${encodeURIComponent(eid)}&roster_type=${mypmoRosterType}`,
         { credentials: 'same-origin', headers: { Accept: 'application/json' } },
       )
       const result = await response.json() as {
@@ -1578,6 +1615,7 @@ function App() {
   async function handleMyPmoUpload() {
     setMypmoUploadMessage('')
     setMypmoUploadError('')
+
     if (!mypmoFile) {
       setMypmoUploadError('Choose an Excel workbook first.')
       return
@@ -1589,24 +1627,141 @@ function App() {
 
     setMypmoUploadBusy(true)
     try {
-      const form = new FormData()
-      form.append('file', mypmoFile)
-      const response = await fetch('/api/mypmo/upload', {
-        method: 'POST',
-        credentials: 'same-origin',
-        body: form,
+      setMypmoUploadMessage('Reading Excel workbook...')
+      const bytes = await mypmoFile.arrayBuffer()
+      const workbook = XLSX.read(bytes, { type: 'array', cellDates: false })
+
+      if (!workbook.SheetNames.length) {
+        throw new Error('The workbook has no worksheets.')
+      }
+
+      const sheet = workbook.Sheets[workbook.SheetNames[0]]
+      if (!sheet) throw new Error('Could not read the first worksheet.')
+
+      const rawRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+        defval: '',
+        raw: false,
       })
-      const result = await response.json() as {
-        ok?: boolean
-        imported?: number
-        message?: string
-        error?: string
+
+      if (!rawRows.length) throw new Error('The first worksheet contains no employee rows.')
+      if (rawRows.length > 20000) throw new Error('Maximum supported workbook size is 20,000 employee rows.')
+
+      const projectHeader = mypmoRosterType === 'IX' ? 'SOWName' : 'Project'
+      const leadHeader = mypmoRosterType === 'IX'
+        ? 'PeopleLead(Workday)'
+        : 'Reporting Line Manager'
+
+      const headers = new Set(
+        (XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+          header: 1,
+          defval: '',
+          blankrows: false,
+        })[0] ?? []).map(value => String(value).trim()),
+      )
+
+      const requiredHeaders = [
+        'EnterpriseId',
+        'ResourceName',
+        'InternetMail',
+        projectHeader,
+        leadHeader,
+      ]
+      const missing = requiredHeaders.filter(header => !headers.has(header))
+      if (missing.length) {
+        throw new Error(`Missing required columns: ${missing.join(', ')}`)
       }
-      if (!response.ok || !result.ok) {
-        throw new Error(result.error || result.message || 'Upload failed.')
+
+      const seenIds = new Set<string>()
+      let duplicatesSkipped = 0
+      let invalidRowsSkipped = 0
+      let namesRecovered = 0
+      let invalidEmailsBlanked = 0
+      const employees = rawRows.flatMap((row) => {
+        const enterpriseId = String(row.EnterpriseId ?? '').trim()
+        const originalName = String(row.ResourceName ?? '').trim()
+        const firstName = String(row.ForeignFirstName ?? '').trim()
+        const lastName = String(row.ForeignLastName ?? '').trim()
+        const fullName = originalName || [firstName, lastName].filter(Boolean).join(' ')
+        if (!originalName && fullName) namesRecovered += 1
+        const rawEmail = String(row.InternetMail ?? '').trim().toLowerCase()
+        const email = rawEmail.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail)
+          ? rawEmail
+          : ''
+        if (!email) invalidEmailsBlanked += 1
+        const project = String(row[projectHeader] ?? '').trim()
+        const projectLead = String(row[leadHeader] ?? '').trim()
+
+        if (!enterpriseId || enterpriseId.length > 100) {
+          invalidRowsSkipped += 1
+          return []
+        }
+        if (!fullName || fullName.length > 200) {
+          invalidRowsSkipped += 1
+          return []
+        }
+
+        if (project.length > 200 || projectLead.length > 200) {
+          invalidRowsSkipped += 1
+          return []
+        }
+
+        const normalizedId = enterpriseId.toLowerCase()
+        if (seenIds.has(normalizedId)) {
+          duplicatesSkipped += 1
+          return []
+        }
+        seenIds.add(normalizedId)
+
+        return [{ enterpriseId, fullName, email, project, projectLead }]
+      })
+
+      const batchSize = 100
+      let imported = 0
+      const totalBatches = Math.ceil(employees.length / batchSize)
+
+      for (let offset = 0; offset < employees.length; offset += batchSize) {
+        const batch = employees.slice(offset, offset + batchSize)
+        const batchNumber = Math.floor(offset / batchSize) + 1
+
+        setMypmoUploadMessage(
+          `Uploading ${mypmoRosterType}: batch ${batchNumber} of ${totalBatches} (${imported} of ${employees.length} completed)...`,
+        )
+
+        const response = await fetch('/api/mypmo/upload', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            rosterType: mypmoRosterType,
+            employees: batch,
+          }),
+        })
+
+        const responseText = await response.text()
+        let result: {
+          ok?: boolean
+          imported?: number
+          error?: string
+          message?: string
+        }
+        try {
+          result = JSON.parse(responseText)
+        } catch {
+          throw new Error(`Server returned a non-JSON response (HTTP ${response.status}). Batch ${batchNumber} was not confirmed.`)
+        }
+
+        if (!response.ok || !result.ok) {
+          throw new Error(result.error || result.message || `Batch ${batchNumber} failed (HTTP ${response.status}).`)
+        }
+
+        imported += result.imported ?? batch.length
+        setMypmoUploadMessage(
+          `Uploaded ${imported} of ${employees.length} ${mypmoRosterType} employees...`,
+        )
       }
+
       setMypmoUploadMessage(
-        result.message || `Imported ${result.imported ?? 0} employees successfully.`,
+        `${mypmoRosterType} import completed successfully: ${imported} employees processed; ${duplicatesSkipped} duplicate rows skipped (first occurrence retained); ${invalidEmailsBlanked} missing/invalid email values saved as blank; ${invalidRowsSkipped} invalid employee rows skipped; ${namesRecovered} names recovered from first/last name fields. Existing attendee, check-in and wristband data were not changed.`,
       )
       setMypmoFile(null)
       const input = document.getElementById('mypmo-file') as HTMLInputElement | null
@@ -1631,7 +1786,7 @@ function App() {
     setMypmoLookupBusy(true)
     try {
       const response = await fetch(
-        `/api/mypmo/lookup?eid=${encodeURIComponent(eid)}`,
+        `/api/mypmo/lookup?eid=${encodeURIComponent(eid)}&roster_type=${mypmoRosterType}`,
         { credentials: 'same-origin', headers: { Accept: 'application/json' } },
       )
       const result = await response.json() as {
@@ -1766,6 +1921,7 @@ function App() {
                   <span className="dashboard-status"><span className="status-dot" />Signed in</span>
                 </div>
 
+                {canUseCheckin(signedInStaff) && (
                 <button
                   className="cc-primary-action"
                   type="button"
@@ -1783,8 +1939,10 @@ function App() {
                   </span>
                   <span className="cc-primary-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h15M13 5l7 7-7 7"/></svg></span>
                 </button>
+                )}
 
                 <div className="cc-quick-actions" aria-label="Other event tasks">
+                  {canAccessEmergencyScanner(signedInStaff) && (
                   <button type="button" className="cc-quick-action" onClick={() => {
                     setEmergencyQuery('')
                     setEmergencyResults([])
@@ -1795,6 +1953,7 @@ function App() {
                     <span><strong>Emergency Scanner</strong><small>Find an attendee and their emergency contacts</small></span>
                     <span className="cc-quick-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h15M13 5l7 7-7 7"/></svg></span>
                   </button>
+                  )}
                   {canManageRegistration(signedInStaff) && (<button type="button" className="cc-quick-action" onClick={() => { setRegistrationFilter('All'); setSearchTerm(''); setActivePage('registration'); void loadAttendees() }}>
                     <span className="cc-quick-icon" aria-hidden="true">&#9776;</span>
                     <span><strong>Attendees</strong><small>Search and update registrations</small></span>
@@ -1814,13 +1973,13 @@ function App() {
                     </button>
                   )}
                   {/* QR wristband management is intentionally not a primary workflow in Option 2. */}
-                  {canManageRegistration(signedInStaff) && (
+                  {signedInStaff.role === 'admin' && (
                     <button type="button" className="cc-quick-action" onClick={() => { setActivePage('mypmo'); setMypmoUploadMessage(''); setMypmoUploadError(''); setMypmoLookupMessage(''); setMypmoLookupError(''); setMypmoEmployee(null) }}>
                       <span className="cc-quick-icon" aria-hidden="true">&#9776;</span>
                       <span><strong>MyPMO</strong><small>Import employee data and look up an Enterprise ID</small></span>
                       <span className="cc-quick-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h15M13 5l7 7-7 7"/></svg></span>
                     </button>
-                  )}                  {signedInStaff.role === 'admin' && (<button type="button" className="cc-quick-action" onClick={() => { setActivePage('inventory'); void loadInventory() }}>
+                  )}                  {canManageInventory(signedInStaff) && (<button type="button" className="cc-quick-action" onClick={() => { setActivePage('inventory'); void loadInventory() }}>
                     <span className="cc-quick-icon" aria-hidden="true">&#9776;</span>
                     <span><strong>Band Inventory</strong><small>Assign a preprinted band to an attendee</small></span>
                     <span className="cc-quick-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h15M13 5l7 7-7 7"/></svg></span>
@@ -1856,7 +2015,7 @@ function App() {
             </>
           )}
 
-          {activePage === 'emergency' && (
+          {activePage === 'emergency' && canAccessEmergencyScanner(signedInStaff) && (
             <section className="cc-inventory-page cc-emergency-page">
               <button className="dashboard-signout" type="button" onClick={() => {
                 void stopEmergencyQrScanner()
@@ -1982,6 +2141,17 @@ function App() {
               <p className="login-description">Upload employee responses exported from Microsoft Forms. Review and validate the records before importing them.</p>
               <div className="cc-inventory-panel">
                 <h2>Upload Microsoft Forms responses</h2>
+                <p>Choose the MyPMO roster that supplies project and reporting manager details.</p>
+                <label htmlFor="employee-import-roster">MyPMO roster</label>
+                <select
+                  id="employee-import-roster"
+                  value={employeeImportRosterType}
+                  disabled={employeeImportBusy}
+                  onChange={(event) => setEmployeeImportRosterType(event.target.value as 'ASPIRE' | 'IX')}
+                >
+                  <option value="ASPIRE">Roche Aspire MyPMO</option>
+                  <option value="IX">Roche IX MyPMO</option>
+                </select>
                 <p>Choose an Excel or CSV export and review validation results before importing.</p>
                 <label htmlFor="employee-import-file">Microsoft Forms export (.xlsx, .xls, .csv)</label>
                 <input
@@ -2008,7 +2178,7 @@ function App() {
                         <thead>
                           <tr>
                             <th>Employee ID</th><th>Name</th><th>Email</th>
-                            <th>Project / Department</th><th>Contact</th>
+                            <th>Project / Department</th><th>Emergency Contact</th>
                             <th>Project Lead</th><th>Validation</th>
                           </tr>
                         </thead>
@@ -2019,7 +2189,7 @@ function App() {
                               <td>{row.name || '—'}</td>
                               <td>{row.email || '—'}</td>
                               <td>{row.project || '—'}</td>
-                              <td>{row.contact_number || '—'}</td>
+                              <td>{row.family_emergency_contact_number || '—'}</td>
                               <td>{row.project_lead || '—'}</td>
                               <td>{row.valid ? 'Valid' : row.issue}</td>
                             </tr>
@@ -2049,7 +2219,7 @@ function App() {
               </div>
             </section>
           )}
-          {activePage === 'mypmo' && (
+          {activePage === 'mypmo' && signedInStaff.role === 'admin' && (
             <section className="cc-inventory-page">
               <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>&#8592; Back to workspace</button>
               <p className="section-kicker">EMPLOYEE DIRECTORY</p>
@@ -2059,6 +2229,17 @@ function App() {
               {signedInStaff?.role === 'admin' && (
                 <section className="cc-inventory-panel">
                   <h2>Import Excel workbook</h2>
+                  <p>Select which MyPMO roster this workbook belongs to. Only that roster will be updated.</p>
+                  <label htmlFor="mypmo-roster">MyPMO roster</label>
+                  <select
+                    id="mypmo-roster"
+                    value={mypmoRosterType}
+                    disabled={mypmoUploadBusy}
+                    onChange={(event) => setMypmoRosterType(event.target.value as 'ASPIRE' | 'IX')}
+                  >
+                    <option value="ASPIRE">Roche Aspire MyPMO</option>
+                    <option value="IX">Roche IX MyPMO</option>
+                  </select>
                   <p>Accepted formats: .xlsx and .xls. Use approved data only.</p>
                   <input id="mypmo-file" type="file" accept=".xlsx,.xls" onChange={(event) => { setMypmoFile(event.target.files?.[0] ?? null); setMypmoUploadMessage(''); setMypmoUploadError('') }} />
                   <button className="cc-primary-action" type="button" disabled={!mypmoFile || mypmoUploadBusy} onClick={() => void handleMyPmoUpload()}>
@@ -2071,6 +2252,20 @@ function App() {
 
               <section className="cc-inventory-panel">
                 <h2>Enterprise ID lookup</h2>
+                <label htmlFor="mypmo-lookup-roster">Search roster</label>
+                <select
+                  id="mypmo-lookup-roster"
+                  value={mypmoRosterType}
+                  onChange={(event) => {
+                    setMypmoRosterType(event.target.value as 'ASPIRE' | 'IX')
+                    setMypmoEmployee(null)
+                    setMypmoLookupMessage('')
+                    setMypmoLookupError('')
+                  }}
+                >
+                  <option value="ASPIRE">Roche Aspire MyPMO</option>
+                  <option value="IX">Roche IX MyPMO</option>
+                </select>
                 <form onSubmit={(event) => { event.preventDefault(); void handleMyPmoLookup() }}>
                   <div className="cc-inventory-fields">
                     <label htmlFor="mypmo-eid">Enterprise ID
@@ -2181,11 +2376,11 @@ function App() {
     )}
   </section>
 )}
-          {activePage === 'inventory' && signedInStaff.role === 'admin' && (
+          {activePage === 'inventory' && canManageInventory(signedInStaff) && (
             <section className="cc-inventory-page">
               <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>&#8592; Back to workspace</button>
               <p className="section-kicker">BAND INVENTORY</p><h1>Band inventory.</h1>
-              <p className="login-description">Staff can assign an already printed band. Only administrators can generate serials, print QR labels, and view inventory records.</p>
+              <p className="login-description">Inventory staff can view inventory and assign preprinted bands. Only administrators can generate serials and print QR labels.</p>
               {inventoryError && (
                 <div className="cc-error-modal-overlay" role="presentation">
                   <div
@@ -2238,7 +2433,7 @@ function App() {
                 <div className="cc-inventory-fields"><label>Wristband serial<input placeholder="ACC057" value={inventorySerial} onChange={e=>setInventorySerial(e.target.value.toUpperCase())}/></label><label>Employee ID<input placeholder="Employee EID" value={inventoryEid} onChange={e=>setInventoryEid(e.target.value)}/></label></div>
                 <button className="cc-primary-action" disabled={inventoryBusy||!inventorySerial.trim()||!inventoryEid.trim()} type="button" onClick={()=>void inventoryAction('/api/inventory/assign',{serial:inventorySerial,eid:inventoryEid})}>Assign band</button>
               </section>
-              {signedInStaff.role === 'admin' && <section className="cc-inventory-panel"><h2>Inventory list</h2><div className="cc-inventory-fields"><label>Search serial number<input placeholder="ACC099" value={inventorySearch} onChange={e=>setInventorySearch(e.target.value.toUpperCase())}/></label><button type="button" className="dashboard-signout" onClick={()=>void loadInventory()}>Refresh</button></div>
+              {canManageInventory(signedInStaff) && <section className="cc-inventory-panel"><h2>Inventory list</h2><div className="cc-inventory-fields"><label>Search serial number<input placeholder="ACC099" value={inventorySearch} onChange={e=>setInventorySearch(e.target.value.toUpperCase())}/></label><button type="button" className="dashboard-signout" onClick={()=>void loadInventory()}>Refresh</button></div>
                 <div className="cc-inventory-table-wrap"><table className="cc-inventory-table"><thead><tr><th>Serial</th><th>Status</th><th>Employee ID</th><th>Attendee</th></tr></thead><tbody>{inventoryBands.filter(b=>!inventorySearch||b.serial.includes(inventorySearch)).slice(0,10).map(b=><tr key={b.serial}><td>{b.serial}</td><td>{b.status}</td><td>{b.attendee_eid||'—'}</td><td>{b.name||'—'}</td></tr>)}</tbody></table></div><p className="login-description">Showing up to 10 latest inventory records.</p>
               </section>}
               </div>
@@ -2600,7 +2795,7 @@ function App() {
 
           )}
 
-          {activePage === 'wristbands' && (
+          {activePage === 'wristbands' && signedInStaff.role === 'admin' && (
 
             <div className="cc-feature-page">
 
@@ -2622,7 +2817,7 @@ function App() {
 
           )}
 
-          {activePage === 'checkin' && (
+          {activePage === 'checkin' && canUseCheckin(signedInStaff) && (
 
             <div className="cc-feature-page">
 

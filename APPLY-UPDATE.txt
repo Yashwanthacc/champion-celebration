@@ -1,0 +1,15 @@
+Champion Celebration - Employee Registration dashboard addition
+
+This update changes only src/App.tsx. It preserves the existing application and existing Worker API.
+
+Included:
+- Adds a dedicated Employee Registration tile to the signed-in dashboard for Admin, Neelima, and Aniruddha.
+- Opens the pending QR submission review workflow and loads available wristbands.
+- Adds a printable public registration QR inside the staff registration workspace.
+- Uses the same application origin with ?register=1 for the public employee form.
+- Keeps the main sign-in screen staff-only; the QR route is public and takes precedence over a restored staff session.
+- Labels the two decisions Allow and Don't Allow; Edit details remains available before either decision.
+
+The existing Worker already enforces registration permissions, edit permissions, MyPMO approval validation, wristband assignment, and pending-only rejection. No Worker or database change is included.
+
+Apply only to the active development folder. Do not apply to the original project or Git-sync folder. Do not deploy or sync Git.

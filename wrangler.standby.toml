@@ -1,0 +1,27 @@
+name = "champion-celebration-development"
+main = "worker/index.ts"
+compatibility_date = "2026-10-19"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "champion-celebration-demo"
+database_id = "fda75ce8-0422-4ab6-a475-67b1220bea32"
+
+[assets]
+directory = "./dist"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
+
+[observability.traces]
+enabled = false
+head_sampling_rate = 1
+persist = true
+
+[vars]
+LOCAL_DEVELOPMENT = "false"
