@@ -2765,6 +2765,8 @@ function App() {
 
                         <td>{attendee.department}</td>
 
+                        <td>{attendee.mypmo_available === 1 ? <span className="status-available">Available</span> : <span className="status-unavailable">Not Available</span>}</td>
+
                         <td><span className={`registration-status status-${attendee.status.toLowerCase()}`}>{attendee.status}</span></td>
 
                         <td><button className="attendee-save-button" type="button" onClick={() => startEditingAttendee(attendee)}>Edit</button></td>
