@@ -3581,3 +3581,210 @@ button:disabled { cursor: not-allowed; opacity: .58; }
   html { scroll-behavior: auto; }
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+
+/* ============================================================
+   CHAMPION CELEBRATION UI READABILITY PATCH
+   Version: 1.0
+   Purpose: Improve attendee and Band Inventory table contrast.
+   ============================================================ */
+
+.registration-table-wrap,
+.cc-inventory-table-wrap {
+  background: #ffffff !important;
+  border: 1px solid #d8e1ec !important;
+  border-radius: 14px !important;
+  box-shadow: 0 8px 24px rgba(15, 35, 60, 0.08) !important;
+}
+
+.registration-table,
+.cc-inventory-table {
+  width: 100%;
+  background: #ffffff !important;
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
+  color: #17243a !important;
+  font-size: 13px !important;
+}
+
+.registration-table th,
+.cc-inventory-table th,
+.cc-inventory-panel table th {
+  color: #26364d !important;
+  background: #edf2f8 !important;
+  border-bottom: 1px solid #d8e1ec !important;
+  padding: 14px 15px !important;
+  font-size: 11px !important;
+  font-weight: 800 !important;
+  letter-spacing: 0.055em !important;
+  text-transform: uppercase !important;
+  text-align: left !important;
+  white-space: nowrap !important;
+}
+
+.registration-table td,
+.cc-inventory-table td,
+.cc-inventory-panel table td {
+  color: #26364d !important;
+  background: #ffffff !important;
+  border-bottom: 1px solid #e8edf3 !important;
+  padding: 14px 15px !important;
+  vertical-align: middle !important;
+  font-size: 13px !important;
+  line-height: 1.5 !important;
+}
+
+.registration-table tbody tr:nth-child(even) td,
+.cc-inventory-table tbody tr:nth-child(even) td,
+.cc-inventory-panel table tbody tr:nth-child(even) td {
+  background: #f7f9fc !important;
+}
+
+.registration-table tbody tr:hover td,
+.cc-inventory-table tbody tr:hover td,
+.cc-inventory-panel table tbody tr:hover td {
+  background: #eef5ff !important;
+  color: #17243a !important;
+}
+
+.registration-table tbody tr:last-child td,
+.cc-inventory-table tbody tr:last-child td,
+.cc-inventory-panel table tbody tr:last-child td {
+  border-bottom: 0 !important;
+}
+
+.attendee-eid {
+  color: #174f91 !important;
+  font-weight: 800 !important;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.attendee-name {
+  color: #17243a !important;
+  font-size: 13px !important;
+  font-weight: 800 !important;
+  line-height: 1.45 !important;
+}
+
+.attendee-email {
+  color: #52647b !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  line-height: 1.45 !important;
+  overflow-wrap: anywhere;
+}
+
+.status-available,
+.status-unavailable {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  min-height: 25px;
+  padding: 4px 10px !important;
+  border-radius: 999px !important;
+  font-size: 11px !important;
+  font-weight: 800 !important;
+  line-height: 1.2 !important;
+  white-space: nowrap !important;
+}
+
+.status-available {
+  color: #17633d !important;
+  background: #e5f6ec !important;
+  border: 1px solid #b9e6ca !important;
+}
+
+.status-unavailable {
+  color: #8b3a32 !important;
+  background: #fff0ed !important;
+  border: 1px solid #f2c9c2 !important;
+}
+
+.registration-status {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  min-height: 25px;
+  padding: 4px 10px !important;
+  border-radius: 999px !important;
+  font-size: 11px !important;
+  font-weight: 800 !important;
+  line-height: 1.2 !important;
+  white-space: nowrap !important;
+}
+
+.status-registered {
+  color: #17633d !important;
+  background: #e5f6ec !important;
+  border: 1px solid #b9e6ca !important;
+}
+
+.status-pending {
+  color: #805500 !important;
+  background: #fff5dc !important;
+  border: 1px solid #f0dda7 !important;
+}
+
+.status-cancelled {
+  color: #9b2635 !important;
+  background: #ffeaed !important;
+  border: 1px solid #f0c1c8 !important;
+}
+
+.cc-inventory-panel .login-description {
+  color: #d3dfed !important;
+}
+
+.cc-inventory-panel .cc-inventory-fields label {
+  color: #edf4ff !important;
+  font-weight: 700 !important;
+}
+
+.cc-inventory-panel .cc-inventory-fields input {
+  color: #17243a !important;
+  background: #ffffff !important;
+  border: 1px solid #b9c7d8 !important;
+}
+
+.cc-inventory-panel .cc-inventory-fields input::placeholder {
+  color: #718096 !important;
+}
+
+.attendee-save-button {
+  color: #17243a !important;
+  font-weight: 800 !important;
+  min-height: 34px;
+  border-radius: 9px !important;
+  box-shadow: 0 3px 10px rgba(15, 35, 60, 0.12) !important;
+}
+
+.attendee-save-button:hover:not(:disabled) {
+  color: #101b2b !important;
+  filter: brightness(1.04);
+  transform: translateY(-1px);
+}
+
+.registration-table-wrap,
+.cc-inventory-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+}
+
+@media (max-width: 820px) {
+  .registration-table th,
+  .registration-table td,
+  .cc-inventory-table th,
+  .cc-inventory-table td {
+    padding: 12px 13px !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .registration-table tbody tr,
+  .cc-inventory-table tbody tr {
+    transition: none !important;
+  }
+}
