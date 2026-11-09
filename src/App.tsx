@@ -1897,122 +1897,62 @@ function App() {
         <section className="dashboard-content">
 
           {activePage === 'home' && (
-            <>
-              <div className="dashboard-welcome cc-home-welcome">
-                <div>
-                  <p className="section-kicker">CHAMPION CELEBRATION</p>
-                  <h1>Event<br /><span>workspace.</span></h1>
-                  <p className="login-description">
-                    One place to manage attendees, issue QR wristbands and check guests in.
-                  </p>
+            <section className="cc-command-center" aria-label="Event workspace">
+              <aside className="cc-command-sidebar">
+                <div className="cc-sidebar-profile">
+                  <span className="cc-sidebar-avatar">{signedInStaff.staffId.slice(0, 2).toUpperCase()}</span>
+                  <div><strong>{signedInStaff.staffId}</strong><small>{signedInStaff.role.toUpperCase()}</small></div>
                 </div>
-                <div className="dashboard-user">
-                  <span className="user-avatar">{signedInStaff.staffId.slice(0, 2).toUpperCase()}</span>
-                  <div><strong>{signedInStaff.staffId}</strong><p>{signedInStaff.role.toUpperCase()}</p></div>
-                </div>
-              </div>
+                <p className="cc-sidebar-label">WORKSPACE</p>
+                <button type="button" className="cc-sidebar-link is-active" onClick={() => setActivePage('home')}><span>⌂</span> Overview</button>
+                {canUseCheckin(signedInStaff) && <button type="button" className="cc-sidebar-link" onClick={() => { setActivePage('checkin'); setCheckinError(''); setCheckinMessage(''); setCheckedInAttendee(null) }}><span>▦</span> QR Check-in</button>}
+                {canManageRegistration(signedInStaff) && <button type="button" className="cc-sidebar-link" onClick={() => { setRegistrationFilter('All'); setSearchTerm(''); setActivePage('registration'); void loadAttendees() }}><span>▤</span> Attendees</button>}
+                {canManageRegistration(signedInStaff) && <button type="button" className="cc-sidebar-link" onClick={() => { setRegistrationFilter('Pending'); setSearchTerm(''); setAttendeeMessage(''); setActivePage('registration'); void loadAttendees() }}><span>✎</span> Registrations</button>}
+                {canManageInventory(signedInStaff) && <button type="button" className="cc-sidebar-link" onClick={() => { setActivePage('inventory'); void loadInventory() }}><span>▣</span> Band Inventory</button>}
+                {canAccessEmergencyScanner(signedInStaff) && <button type="button" className="cc-sidebar-link" onClick={() => { setEmergencyQuery(''); setEmergencyResults([]); setEmergencyError(''); setActivePage('emergency') }}><span>⚠</span> Emergency Lookup</button>}
+                {signedInStaff.role === 'admin' && <>
+                  <p className="cc-sidebar-label cc-sidebar-label-spaced">ADMINISTRATION</p>
+                  <button type="button" className="cc-sidebar-link" onClick={() => setActivePage('operations')}><span>▥</span> Operations</button>
+                  <button type="button" className="cc-sidebar-link" onClick={() => { setActivePage('mypmo'); setMypmoUploadMessage(''); setMypmoUploadError(''); setMypmoLookupMessage(''); setMypmoLookupError(''); setMypmoEmployee(null) }}><span>⌕</span> MyPMO</button>
+                  <button type="button" className="cc-sidebar-link" onClick={() => setActivePage('employee-prereg')}><span>▧</span> Pre-registration</button>
+                </>}
+                <div className="cc-sidebar-foot"><span className="cc-live-indicator" /> Event workspace active</div>
+              </aside>
 
-              <section className="cc-event-workspace" aria-labelledby="cc-workspace-title">
-                <div className="cc-workspace-heading">
+              <div className="cc-command-main">
+                <header className="cc-command-heading">
                   <div>
-                    <p className="section-kicker">EVENT OPERATIONS</p>
-                    <h2 id="cc-workspace-title">What would you like to do?</h2>
+                    <p className="section-kicker">CHAMPION CELEBRATION / STAFF PORTAL</p>
+                    <h1>Good to have you back.</h1>
+                    <p>Everything your team needs to run a smooth event, in one place.</p>
                   </div>
-                  <span className="dashboard-status"><span className="status-dot" />Signed in</span>
-                </div>
+                  <span className="cc-command-date">EVENT OPERATIONS</span>
+                </header>
 
-                {canUseCheckin(signedInStaff) && (
-                <button
-                  className="cc-primary-action"
-                  type="button"
-                  onClick={() => {
-                    setActivePage('checkin')
-                    setCheckinError('')
-                    setCheckinMessage('')
-                    setCheckedInAttendee(null)
-                  }}
-                >
-                  <span className="cc-primary-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="25" height="25" fill="currentColor"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h3v3h-3zM19 14h2v2h-2zM19 19h2v2h-2z"/></svg></span>
-                  <span className="cc-primary-copy">
-                    <strong>Scan QR / Check in</strong>
-                    <span>Scan an attendee's wristband or enter their employee ID.</span>
-                  </span>
-                  <span className="cc-primary-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h15M13 5l7 7-7 7"/></svg></span>
-                </button>
-                )}
+                <section className="cc-metric-strip" aria-label="Event overview">
+                  <article className="cc-metric-card"><span className="cc-metric-icon">◎</span><div><small>Saved attendees</small><strong>{attendees.length}</strong><span>Records in the workspace</span></div></article>
+                  <article className="cc-metric-card"><span className="cc-metric-icon">✓</span><div><small>Registered</small><strong>{registeredCount}</strong><span>Confirmed registrations</span></div></article>
+                  <article className="cc-metric-card"><span className="cc-metric-icon">⌁</span><div><small>Checked in</small><strong>0</strong><span>Guest arrivals recorded</span></div></article>
+                </section>
 
-                <div className="cc-quick-actions" aria-label="Other event tasks">
-                  {canAccessEmergencyScanner(signedInStaff) && (
-                  <button type="button" className="cc-quick-action" onClick={() => {
-                    setEmergencyQuery('')
-                    setEmergencyResults([])
-                    setEmergencyError('')
-                    setActivePage('emergency')
-                  }}>
-                    <span className="cc-quick-icon" aria-hidden="true">&#9888;</span>
-                    <span><strong>Emergency Scanner</strong><small>Find an attendee and their emergency contacts</small></span>
-                    <span className="cc-quick-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h15M13 5l7 7-7 7"/></svg></span>
-                  </button>
-                  )}
-                  {canManageRegistration(signedInStaff) && (<button type="button" className="cc-quick-action" onClick={() => { setRegistrationFilter('All'); setSearchTerm(''); setActivePage('registration'); void loadAttendees() }}>
-                    <span className="cc-quick-icon" aria-hidden="true">&#9776;</span>
-                    <span><strong>Attendees</strong><small>Search and update registrations</small></span>
-                    <span className="cc-quick-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h15M13 5l7 7-7 7"/></svg></span>
-                  </button>)}
-                  {canManageRegistration(signedInStaff) && (
-                    <button type="button" className="cc-quick-action" onClick={() => {
-                      setRegistrationFilter('Pending')
-                      setSearchTerm('')
-                      setAttendeeMessage('')
-                      setActivePage('registration')
-                      void loadAttendees()
-                    }}>
-                      <span className="cc-quick-icon" aria-hidden="true">&#128221;</span>
-                      <span><strong>Employee Registration</strong><small>Review QR submissions, edit details, allow or don't allow</small></span>
-                      <span className="cc-quick-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h15M13 5l7 7-7 7"/></svg></span>
-                    </button>
-                  )}
-                  {/* QR wristband management is intentionally not a primary workflow in Option 2. */}
-                  {signedInStaff.role === 'admin' && (
-                    <button type="button" className="cc-quick-action" onClick={() => { setActivePage('mypmo'); setMypmoUploadMessage(''); setMypmoUploadError(''); setMypmoLookupMessage(''); setMypmoLookupError(''); setMypmoEmployee(null) }}>
-                      <span className="cc-quick-icon" aria-hidden="true">&#9776;</span>
-                      <span><strong>MyPMO</strong><small>Import employee data and look up an Enterprise ID</small></span>
-                      <span className="cc-quick-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h15M13 5l7 7-7 7"/></svg></span>
-                    </button>
-                  )}                  {canManageInventory(signedInStaff) && (<button type="button" className="cc-quick-action" onClick={() => { setActivePage('inventory'); void loadInventory() }}>
-                    <span className="cc-quick-icon" aria-hidden="true">&#9776;</span>
-                    <span><strong>Band Inventory</strong><small>Assign a preprinted band to an attendee</small></span>
-                    <span className="cc-quick-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h15M13 5l7 7-7 7"/></svg></span>
-                  </button>)}
-
-                {signedInStaff.role === 'admin' && (
-                  <button type="button" className="cc-quick-action" onClick={() => setActivePage('operations')}>
-                    <span className="cc-quick-icon" aria-hidden="true">&#9776;</span>
-                    <span><strong>Operations Dashboard</strong><small>Live event activity, wristbands and check-ins</small></span>
-                    <span className="cc-quick-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h15M13 5l7 7-7 7"/></svg></span>
-                  </button>
-                )}
-                {signedInStaff.role === 'admin' && (
-                  <button type="button" className="cc-quick-action" onClick={() => setActivePage('employee-prereg')}>
-                    <span className="cc-quick-icon" aria-hidden="true">&#128203;</span>
-                    <span><strong>Employee Pre-Registration</strong><small>Upload and validate Microsoft Forms responses</small></span>
-                    <span className="cc-quick-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h15M13 5l7 7-7 7"/></svg></span>
-                  </button>
-                )}
-                </div>
-                
-                <div className="cc-attendee-summary cc-dashboard-summary">
-                  <div className="summary-saved"><span>Saved attendees</span><strong>{attendees.length}</strong></div>
-                  <div className="summary-registered"><span>Registered</span><strong>{registeredCount}</strong></div>
-                  <div className="summary-checkin"><span>Checked in</span><strong>0</strong></div>
-                </div>
-              </section>
-
-              <div className="dashboard-notice">
-                <span aria-hidden="true">i</span>
-                <p><strong>Before the event</strong><br />Confirm attendee records, assign QR wristbands, then use Scan QR / Check in at the entrance.</p>
+                <section className="cc-action-section" aria-labelledby="cc-action-title">
+                  <div className="cc-section-heading"><div><p className="section-kicker">QUICK ACCESS</p><h2 id="cc-action-title">What would you like to do?</h2></div><span>Choose a task to continue</span></div>
+                  {canUseCheckin(signedInStaff) && <button className="cc-checkin-feature" type="button" onClick={() => { setActivePage('checkin'); setCheckinError(''); setCheckinMessage(''); setCheckedInAttendee(null) }}>
+                    <span className="cc-feature-symbol">▦</span><span className="cc-feature-copy"><small>FAST LANE</small><strong>Scan QR / Check in</strong><em>Scan a guest wristband or look them up by employee ID.</em></span><span className="cc-feature-cta">Open scanner <b>↗</b></span>
+                  </button>}
+                  <div className="cc-action-grid">
+                    {canManageRegistration(signedInStaff) && <button type="button" className="cc-action-tile" onClick={() => { setRegistrationFilter('All'); setSearchTerm(''); setActivePage('registration'); void loadAttendees() }}><span className="cc-tile-icon">▤</span><span><strong>Attendees</strong><small>Search records and update registrations</small></span><b>↗</b></button>}
+                    {canManageRegistration(signedInStaff) && <button type="button" className="cc-action-tile" onClick={() => { setRegistrationFilter('Pending'); setSearchTerm(''); setAttendeeMessage(''); setActivePage('registration'); void loadAttendees() }}><span className="cc-tile-icon">✎</span><span><strong>Employee Registration</strong><small>Review and approve QR submissions</small></span><b>↗</b></button>}
+                    {canManageInventory(signedInStaff) && <button type="button" className="cc-action-tile" onClick={() => { setActivePage('inventory'); void loadInventory() }}><span className="cc-tile-icon">▣</span><span><strong>Band Inventory</strong><small>Assign preprinted wristbands</small></span><b>↗</b></button>}
+                    {canAccessEmergencyScanner(signedInStaff) && <button type="button" className="cc-action-tile" onClick={() => { setEmergencyQuery(''); setEmergencyResults([]); setEmergencyError(''); setActivePage('emergency') }}><span className="cc-tile-icon">⚠</span><span><strong>Emergency Scanner</strong><small>Find attendee emergency contacts</small></span><b>↗</b></button>}
+                    {signedInStaff.role === 'admin' && <button type="button" className="cc-action-tile" onClick={() => setActivePage('operations')}><span className="cc-tile-icon">▥</span><span><strong>Operations Dashboard</strong><small>Monitor event activity and check-ins</small></span><b>↗</b></button>}
+                    {signedInStaff.role === 'admin' && <button type="button" className="cc-action-tile" onClick={() => { setActivePage('mypmo'); setMypmoUploadMessage(''); setMypmoUploadError(''); setMypmoLookupMessage(''); setMypmoLookupError(''); setMypmoEmployee(null) }}><span className="cc-tile-icon">⌕</span><span><strong>MyPMO</strong><small>Import data and look up Enterprise IDs</small></span><b>↗</b></button>}
+                    {signedInStaff.role === 'admin' && <button type="button" className="cc-action-tile" onClick={() => setActivePage('employee-prereg')}><span className="cc-tile-icon">▧</span><span><strong>Employee Pre-Registration</strong><small>Validate Microsoft Forms responses</small></span><b>↗</b></button>}
+                  </div>
+                </section>
+                <footer className="cc-command-footer"><span><i /> All systems ready</span><span>Champion Celebration · Staff workspace</span></footer>
               </div>
-            </>
+            </section>
           )}
 
           {activePage === 'emergency' && canAccessEmergencyScanner(signedInStaff) && (
