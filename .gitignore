@@ -10,3 +10,4 @@ node_modules/
 dist/
 .dev.vars
 .wrangler/
+local-staff-credentials.txt

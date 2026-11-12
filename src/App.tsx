@@ -42,6 +42,7 @@ type Attendee = {
   project?: string | null
   project_lead?: string | null
   residential_address?: string | null
+  residence_drop_required?: string | null
   colleague_enterprise_id?: string | null
   family_emergency_contact_name?: string | null
   family_emergency_contact_relation?: string | null
@@ -216,6 +217,11 @@ function App() {
   const [operationsDashboardError, setOperationsDashboardError] = useState('')
   const [operationsDashboardBusy, setOperationsDashboardBusy] = useState(false)
   const [operationsDashboardSearch, setOperationsDashboardSearch] = useState('')
+  const [transportationDashboard, setTransportationDashboard] = useState<any>(null)
+  const [transportationDashboardError, setTransportationDashboardError] = useState('')
+  const [transportationDashboardBusy, setTransportationDashboardBusy] = useState(false)
+  const [transportationDashboardSearch, setTransportationDashboardSearch] = useState('')
+  const [transportationDashboardFilter, setTransportationDashboardFilter] = useState('ALL')
   // operations dashboard auto-refresh
   useEffect(() => {
     if (signedInStaff?.role !== 'admin' || activePage !== 'operations') return
@@ -261,6 +267,51 @@ function App() {
     link.remove()
     URL.revokeObjectURL(url)
   }
+  useEffect(() => {
+    if (signedInStaff?.role !== 'admin' || activePage !== 'transportation') return
+    void loadTransportationDashboard()
+    const timer = window.setInterval(() => void loadTransportationDashboard(), 10000)
+    return () => window.clearInterval(timer)
+  }, [signedInStaff, activePage])
+
+  async function loadTransportationDashboard() {
+    if (signedInStaff?.role !== 'admin') return
+    setTransportationDashboardBusy(true)
+    try {
+      const response = await fetch('/api/admin/transportation-dashboard', { credentials: 'same-origin' })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'Could not load transportation dashboard')
+      setTransportationDashboard(data)
+      setTransportationDashboardError('')
+    } catch (error) {
+      setTransportationDashboardError(error instanceof Error ? error.message : 'Could not load transportation dashboard')
+    } finally {
+      setTransportationDashboardBusy(false)
+    }
+  }
+
+  function downloadTransportationCsv() {
+    if (!transportationDashboard) return
+    const columns = ['Enterprise ID', 'Employee Name', 'Department', 'Drop Address', 'Band Serial', 'Confirmation Status', 'Answer', 'Confirmed At', 'Confirmed By Staff ID']
+    const rows: unknown[][] = [columns]
+    for (const item of transportationDashboard.rows || []) {
+      rows.push([item.eid, item.employee_name, item.department, item.residential_address, item.band_serial, item.confirmation_status, item.confirmed_answer, item.confirmed_at, item.confirmed_by_staff_id])
+    }
+    const csv = rows.map(row => row.map(value => {
+      const cell = String(value ?? '').replace(/\r?\n/g, ' ')
+      return `"${cell.replace(/"/g, '""')}"`
+    }).join(',')).join('\r\n')
+    const blob = new Blob(['\uFEFF', csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `transportation-dashboard-${new Date().toISOString().slice(0, 10)}.csv`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+  }
+
   const [mypmoRosterType, setMypmoRosterType] = useState<'ASPIRE' | 'IX'>('ASPIRE')
   const [employeeImportRosterType, setEmployeeImportRosterType] = useState<'ASPIRE' | 'IX'>('ASPIRE')
   const [mypmoFile, setMypmoFile] = useState<File | null>(null)
@@ -284,6 +335,7 @@ function App() {
     colleague_emergency_contact_number: string
     colleague_enterprise_id: string
     residential_address: string
+    residence_drop_required: string
     project: string
     project_lead: string
     valid: boolean
@@ -329,6 +381,7 @@ function App() {
               colleague_emergency_contact_number: row.colleague_emergency_contact_number,
               colleague_enterprise_id: row.colleague_enterprise_id,
               residential_address: row.residential_address,
+              residence_drop_required: row.residence_drop_required,
               project_lead: row.project_lead,
             })),
           }),
@@ -438,6 +491,7 @@ function App() {
           const colleagueContact = pick(['contactnumber2', 'colleaguecontactnumber', 'colleagueemergencycontactnumber'])
           const colleagueEid = pick(['enterpriseid', 'colleagueenterpriseid'])
           const residentialAddress = pick(['pleaseprovideyourresidentialaddress', 'residentialaddress', 'address'])
+          const residenceDropRequired = pick(['wouldyouliketoavailadroptoyourresidencefromtheeventvenuejrcconventioncentreby1030pm', 'residencedroprequired', 'transportationopted'])
           const project = ''
           const projectLead = ''
 
@@ -469,6 +523,7 @@ function App() {
             colleague_emergency_contact_number: colleagueContact,
             colleague_enterprise_id: colleagueEid,
             residential_address: residentialAddress,
+            residence_drop_required: residenceDropRequired,
             project,
             project_lead: projectLead,
             valid: issues.length === 0,
@@ -596,6 +651,10 @@ function App() {
   const scannerRef = useRef<Html5Qrcode | null>(null)
 
   const [checkedInAttendee, setCheckedInAttendee] = useState<CheckinResult['attendee'] | null>(null)
+
+  const [pendingInventoryTransportation, setPendingInventoryTransportation] = useState<{ serial: string; eid: string; attendee: { eid: string; name: string; department: string; residence_drop_required?: string } } | null>(null)
+  const [inventoryTransportAnswer, setInventoryTransportAnswer] = useState<'YES' | 'NO' | ''>('')
+  const [inventoryLookupAttendee, setInventoryLookupAttendee] = useState<{ eid: string; name: string; department: string; residence_drop_required: string } | null>(null)
 
   async function submitPublicRegistration(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -1409,59 +1468,37 @@ function App() {
   }
 
   async function submitCheckin(value = checkinInput, method: 'QR' | 'EID' = 'EID') {
-
     const clean = value.trim()
-
     if (!clean || isCheckingIn) return
 
     setIsCheckingIn(true)
-
     setCheckinError('')
-
     setCheckinMessage('')
-
     setCheckedInAttendee(null)
 
     try {
-
       const response = await fetch(method === 'QR' ? '/api/inventory/checkin' : '/api/checkin', {
-
         method: 'POST',
-
         credentials: 'same-origin',
-
         headers: { 'Content-Type': 'application/json' },
-
         body: JSON.stringify(method === 'QR' ? { serial: clean } : { eid: clean }),
-
       })
 
       const result = await response.json() as CheckinResult
 
       if (!response.ok || !result.ok || !result.attendee) {
-
         throw new Error(result.error || 'Check-in failed.')
-
       }
 
       setCheckedInAttendee(result.attendee)
-
       setCheckinMessage('Check-in successful.')
-
       setCheckinInput('')
-
     } catch (error) {
-
       setCheckinError(error instanceof Error ? error.message : 'Check-in failed.')
-
     } finally {
-
       setIsCheckingIn(false)
-
     }
-
   }
-
   async function stopQrScanner() {
 
     const scanner = scannerRef.current
@@ -1810,11 +1847,90 @@ function App() {
     setInventoryError(''); setInventoryMessage(''); setInventoryBusy(true)
     try { const r=await fetch('/api/inventory',{credentials:'same-origin'}); const d=await r.json(); if(!r.ok) throw new Error(d.error||'Could not load inventory'); setInventoryCounts(d.counts); setInventoryBands(d.bands||[]) } catch(e) { setInventoryError(e instanceof Error?e.message:'Could not load inventory') } finally { setInventoryBusy(false) }
   }
-  async function inventoryAction(path:string, payload:Record<string,unknown>) {
-    setInventoryError(''); setInventoryMessage(''); setInventoryBusy(true)
-    try { const r=await fetch(path,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); const d=await r.json(); if(!r.ok) throw new Error(d.error||'Request failed'); setInventoryMessage(path.endsWith('/generate')?`Generated ${d.generated} bands (${d.prefix}${String(d.start).padStart(3,'0')}–${d.prefix}${String(d.end).padStart(3,'0')}).`:path.endsWith('/assign')?`${d.serial} assigned to ${d.attendee.name}.`:`${d.serial} checked in: ${d.attendee.name}.`); if(path.endsWith('/assign')) window.alert('Band assigned successfully!'); await loadInventory() } catch(e) { setInventoryError(e instanceof Error?e.message:'Request failed') } finally { setInventoryBusy(false) }
+  async function lookupInventoryAttendee() {
+    setInventoryError('')
+    setInventoryMessage('')
+    setPendingInventoryTransportation(null)
+    setInventoryLookupAttendee(null)
+    setInventoryTransportAnswer('')
+    const eid = inventoryEid.trim()
+    if (!eid) {
+      setInventoryError('Enter an employee ID first.')
+      return
+    }
+    setInventoryBusy(true)
+    try {
+      const r = await fetch(`/api/inventory/attendee-lookup?eid=${encodeURIComponent(eid)}`, {
+        credentials: 'same-origin'
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.error || 'Could not look up attendee')
+      const attendee = d.attendee
+      setInventoryLookupAttendee(attendee)
+      if (attendee.residence_drop_required === 'YES') {
+        setPendingInventoryTransportation({
+          serial: inventorySerial.trim().toUpperCase(),
+          eid: attendee.eid,
+          attendee
+        })
+        setInventoryMessage(`${attendee.name} opted for transportation during pre-registration. Please confirm today's requirement before assigning the band.`)
+      } else {
+        setInventoryMessage(`${attendee.name} found. No transportation confirmation is required.`)
+      }
+    } catch (e) {
+      setInventoryError(e instanceof Error ? e.message : 'Could not look up attendee')
+    } finally {
+      setInventoryBusy(false)
+    }
   }
+  async function inventoryAction(path:string, payload:Record<string,unknown>) {
+    setInventoryError('')
+    setInventoryMessage('')
+    setInventoryBusy(true)
 
+    try {
+      const r = await fetch(path, {
+        method:'POST',
+        credentials:'same-origin',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(payload)
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.error || 'Request failed')
+
+      if (path.endsWith('/assign') && d.needs_transportation_confirmation) {
+        setPendingInventoryTransportation({
+          serial: String(payload.serial || ''),
+          eid: String(payload.eid || ''),
+          attendee: d.attendee
+        })
+        setInventoryMessage(`${d.attendee.name} had opted for transportation during pre-registration. Please confirm whether they will avail it today.`)
+        return
+      }
+
+      if (path.endsWith('/assign')) {
+        setPendingInventoryTransportation(null)
+      }
+
+      setInventoryMessage(
+        path.endsWith('/generate')
+          ? `Generated ${d.generated} bands (${d.prefix}${String(d.start).padStart(3,'0')}Ã¢â‚¬â€œ${d.prefix}${String(d.end).padStart(3,'0')}).`
+          : path.endsWith('/assign')
+            ? `${d.serial} assigned to ${d.attendee.name}. Transportation: ${d.transportationConfirmation || 'Not applicable'}.`
+            : `${d.serial} checked in: ${d.attendee.name}.`
+      )
+
+      if (path.endsWith('/assign')) {
+        window.alert('Band assigned successfully!')
+      }
+
+      await loadInventory()
+    } catch(e) {
+      setInventoryError(e instanceof Error ? e.message : 'Request failed')
+    } finally {
+      setInventoryBusy(false)
+    }
+  }
   async function printInventoryLabels() {
     setInventoryError('')
     setInventoryMessage('')
@@ -1904,17 +2020,18 @@ function App() {
                   <div><strong>{signedInStaff.staffId}</strong><small>{signedInStaff.role.toUpperCase()}</small></div>
                 </div>
                 <p className="cc-sidebar-label">WORKSPACE</p>
-                <button type="button" className="cc-sidebar-link is-active" onClick={() => setActivePage('home')}><span>⌂</span> Overview</button>
-                {canUseCheckin(signedInStaff) && <button type="button" className="cc-sidebar-link" onClick={() => { setActivePage('checkin'); setCheckinError(''); setCheckinMessage(''); setCheckedInAttendee(null) }}><span>▦</span> QR Check-in</button>}
-                {canManageRegistration(signedInStaff) && <button type="button" className="cc-sidebar-link" onClick={() => { setRegistrationFilter('All'); setSearchTerm(''); setActivePage('registration'); void loadAttendees() }}><span>▤</span> Attendees</button>}
-                {canManageRegistration(signedInStaff) && <button type="button" className="cc-sidebar-link" onClick={() => { setRegistrationFilter('Pending'); setSearchTerm(''); setAttendeeMessage(''); setActivePage('registration'); void loadAttendees() }}><span>✎</span> Registrations</button>}
-                {canManageInventory(signedInStaff) && <button type="button" className="cc-sidebar-link" onClick={() => { setActivePage('inventory'); void loadInventory() }}><span>▣</span> Band Inventory</button>}
-                {canAccessEmergencyScanner(signedInStaff) && <button type="button" className="cc-sidebar-link" onClick={() => { setEmergencyQuery(''); setEmergencyResults([]); setEmergencyError(''); setActivePage('emergency') }}><span>⚠</span> Emergency Lookup</button>}
+                <button type="button" className="cc-sidebar-link is-active" onClick={() => setActivePage('home')}><span>OV</span> Overview</button>
+                {canUseCheckin(signedInStaff) && <button type="button" className="cc-sidebar-link" onClick={() => { setActivePage('checkin'); setCheckinError(''); setCheckinMessage(''); setCheckedInAttendee(null) }}><span>QR</span> QR Check-in</button>}
+                {canManageRegistration(signedInStaff) && <button type="button" className="cc-sidebar-link" onClick={() => { setRegistrationFilter('All'); setSearchTerm(''); setActivePage('registration'); void loadAttendees() }}><span>ID</span> Attendees</button>}
+                {canManageRegistration(signedInStaff) && <button type="button" className="cc-sidebar-link" onClick={() => { setRegistrationFilter('Pending'); setSearchTerm(''); setAttendeeMessage(''); setActivePage('registration'); void loadAttendees() }}><span>REG</span> Registrations</button>}
+                {canManageInventory(signedInStaff) && <button type="button" className="cc-sidebar-link" onClick={() => { setActivePage('inventory'); void loadInventory() }}><span>BND</span> Band Inventory</button>}
+                {canAccessEmergencyScanner(signedInStaff) && <button type="button" className="cc-sidebar-link" onClick={() => { setEmergencyQuery(''); setEmergencyResults([]); setEmergencyError(''); setActivePage('emergency') }}><span>!</span> Emergency Lookup</button>}
                 {signedInStaff.role === 'admin' && <>
                   <p className="cc-sidebar-label cc-sidebar-label-spaced">ADMINISTRATION</p>
-                  <button type="button" className="cc-sidebar-link" onClick={() => setActivePage('operations')}><span>▥</span> Operations</button>
-                  <button type="button" className="cc-sidebar-link" onClick={() => { setActivePage('mypmo'); setMypmoUploadMessage(''); setMypmoUploadError(''); setMypmoLookupMessage(''); setMypmoLookupError(''); setMypmoEmployee(null) }}><span>⌕</span> MyPMO</button>
-                  <button type="button" className="cc-sidebar-link" onClick={() => setActivePage('employee-prereg')}><span>▧</span> Pre-registration</button>
+                  <button type="button" className="cc-sidebar-link" onClick={() => setActivePage('operations')}><span>OPS</span> Operations</button>
+                  <button type="button" className="cc-sidebar-link" onClick={() => { setTransportationDashboardSearch(''); setTransportationDashboardFilter('ALL'); setActivePage('transportation') }}><span>Transport</span> Transportation Dashboard</button>
+                  <button type="button" className="cc-sidebar-link" onClick={() => { setActivePage('mypmo'); setMypmoUploadMessage(''); setMypmoUploadError(''); setMypmoLookupMessage(''); setMypmoLookupError(''); setMypmoEmployee(null) }}><span>MP</span> MyPMO</button>
+                  <button type="button" className="cc-sidebar-link" onClick={() => setActivePage('employee-prereg')}><span>PRE</span> Pre-registration</button>
                 </>}
                 <div className="cc-sidebar-foot"><span className="cc-live-indicator" /> Event workspace active</div>
               </aside>
@@ -1930,24 +2047,25 @@ function App() {
                 </header>
 
                 <section className="cc-metric-strip" aria-label="Event overview">
-                  <article className="cc-metric-card"><span className="cc-metric-icon">◎</span><div><small>Saved attendees</small><strong>{attendees.length}</strong><span>Records in the workspace</span></div></article>
-                  <article className="cc-metric-card"><span className="cc-metric-icon">✓</span><div><small>Registered</small><strong>{registeredCount}</strong><span>Confirmed registrations</span></div></article>
-                  <article className="cc-metric-card"><span className="cc-metric-icon">⌁</span><div><small>Checked in</small><strong>0</strong><span>Guest arrivals recorded</span></div></article>
+                  <article className="cc-metric-card"><span className="cc-metric-icon">USERS</span><div><small>Saved attendees</small><strong>{attendees.length}</strong><span>Records in the workspace</span></div></article>
+                  <article className="cc-metric-card"><span className="cc-metric-icon">OK</span><div><small>Registered</small><strong>{registeredCount}</strong><span>Confirmed registrations</span></div></article>
+                  <article className="cc-metric-card"><span className="cc-metric-icon">IN</span><div><small>Checked in</small><strong>0</strong><span>Guest arrivals recorded</span></div></article>
                 </section>
 
                 <section className="cc-action-section" aria-labelledby="cc-action-title">
                   <div className="cc-section-heading"><div><p className="section-kicker">QUICK ACCESS</p><h2 id="cc-action-title">What would you like to do?</h2></div><span>Choose a task to continue</span></div>
                   {canUseCheckin(signedInStaff) && <button className="cc-checkin-feature" type="button" onClick={() => { setActivePage('checkin'); setCheckinError(''); setCheckinMessage(''); setCheckedInAttendee(null) }}>
-                    <span className="cc-feature-symbol">▦</span><span className="cc-feature-copy"><small>FAST LANE</small><strong>Scan QR / Check in</strong><em>Scan a guest wristband or look them up by employee ID.</em></span><span className="cc-feature-cta">Open scanner <b>↗</b></span>
+                    <span className="cc-feature-symbol">QR</span><span className="cc-feature-copy"><small>FAST LANE</small><strong>Scan QR / Check in</strong><em>Scan a guest wristband or look them up by employee ID.</em></span><span className="cc-feature-cta">Open scanner <b>Open</b></span>
                   </button>}
                   <div className="cc-action-grid">
-                    {canManageRegistration(signedInStaff) && <button type="button" className="cc-action-tile" onClick={() => { setRegistrationFilter('All'); setSearchTerm(''); setActivePage('registration'); void loadAttendees() }}><span className="cc-tile-icon">▤</span><span><strong>Attendees</strong><small>Search records and update registrations</small></span><b>↗</b></button>}
-                    {canManageRegistration(signedInStaff) && <button type="button" className="cc-action-tile" onClick={() => { setRegistrationFilter('Pending'); setSearchTerm(''); setAttendeeMessage(''); setActivePage('registration'); void loadAttendees() }}><span className="cc-tile-icon">✎</span><span><strong>Employee Registration</strong><small>Review and approve QR submissions</small></span><b>↗</b></button>}
-                    {canManageInventory(signedInStaff) && <button type="button" className="cc-action-tile" onClick={() => { setActivePage('inventory'); void loadInventory() }}><span className="cc-tile-icon">▣</span><span><strong>Band Inventory</strong><small>Assign preprinted wristbands</small></span><b>↗</b></button>}
-                    {canAccessEmergencyScanner(signedInStaff) && <button type="button" className="cc-action-tile" onClick={() => { setEmergencyQuery(''); setEmergencyResults([]); setEmergencyError(''); setActivePage('emergency') }}><span className="cc-tile-icon">⚠</span><span><strong>Emergency Scanner</strong><small>Find attendee emergency contacts</small></span><b>↗</b></button>}
-                    {signedInStaff.role === 'admin' && <button type="button" className="cc-action-tile" onClick={() => setActivePage('operations')}><span className="cc-tile-icon">▥</span><span><strong>Operations Dashboard</strong><small>Monitor event activity and check-ins</small></span><b>↗</b></button>}
-                    {signedInStaff.role === 'admin' && <button type="button" className="cc-action-tile" onClick={() => { setActivePage('mypmo'); setMypmoUploadMessage(''); setMypmoUploadError(''); setMypmoLookupMessage(''); setMypmoLookupError(''); setMypmoEmployee(null) }}><span className="cc-tile-icon">⌕</span><span><strong>MyPMO</strong><small>Import data and look up Enterprise IDs</small></span><b>↗</b></button>}
-                    {signedInStaff.role === 'admin' && <button type="button" className="cc-action-tile" onClick={() => setActivePage('employee-prereg')}><span className="cc-tile-icon">▧</span><span><strong>Employee Pre-Registration</strong><small>Validate Microsoft Forms responses</small></span><b>↗</b></button>}
+                    {canManageRegistration(signedInStaff) && <button type="button" className="cc-action-tile" onClick={() => { setRegistrationFilter('All'); setSearchTerm(''); setActivePage('registration'); void loadAttendees() }}><span className="cc-tile-icon">ID</span><span><strong>Attendees</strong><small>Search records and update registrations</small></span><b>Open</b></button>}
+                    {canManageRegistration(signedInStaff) && <button type="button" className="cc-action-tile" onClick={() => { setRegistrationFilter('Pending'); setSearchTerm(''); setAttendeeMessage(''); setActivePage('registration'); void loadAttendees() }}><span className="cc-tile-icon">REG</span><span><strong>Employee Registration</strong><small>Review and approve QR submissions</small></span><b>Open</b></button>}
+                    {canManageInventory(signedInStaff) && <button type="button" className="cc-action-tile" onClick={() => { setActivePage('inventory'); void loadInventory() }}><span className="cc-tile-icon">BND</span><span><strong>Band Inventory</strong><small>Assign preprinted wristbands</small></span><b>Open</b></button>}
+                    {canAccessEmergencyScanner(signedInStaff) && <button type="button" className="cc-action-tile" onClick={() => { setEmergencyQuery(''); setEmergencyResults([]); setEmergencyError(''); setActivePage('emergency') }}><span className="cc-tile-icon">!</span><span><strong>Emergency Scanner</strong><small>Find attendee emergency contacts</small></span><b>Open</b></button>}
+                    {signedInStaff.role === 'admin' && <button type="button" className="cc-action-tile" onClick={() => setActivePage('operations')}><span className="cc-tile-icon">OPS</span><span><strong>Operations Dashboard</strong><small>Monitor event activity and check-ins</small></span><b>Open</b></button>}
+                    {signedInStaff.role === 'admin' && <button type="button" className="cc-action-tile" onClick={() => { setTransportationDashboardSearch(''); setTransportationDashboardFilter('ALL'); setActivePage('transportation') }}><span className="cc-tile-icon">BUS</span><span><strong>Transportation Dashboard</strong><small>Track drop confirmations and pending employees</small></span><b>Open</b></button>}
+                    {signedInStaff.role === 'admin' && <button type="button" className="cc-action-tile" onClick={() => { setActivePage('mypmo'); setMypmoUploadMessage(''); setMypmoUploadError(''); setMypmoLookupMessage(''); setMypmoLookupError(''); setMypmoEmployee(null) }}><span className="cc-tile-icon">MP</span><span><strong>MyPMO</strong><small>Import data and look up Enterprise IDs</small></span><b>Open</b></button>}
+                    {signedInStaff.role === 'admin' && <button type="button" className="cc-action-tile" onClick={() => setActivePage('employee-prereg')}><span className="cc-tile-icon">PRE</span><span><strong>Employee Pre-Registration</strong><small>Validate Microsoft Forms responses</small></span><b>Open</b></button>}
                   </div>
                 </section>
                 <footer className="cc-command-footer"><span><i /> All systems ready</span><span>Champion Celebration · Staff workspace</span></footer>
@@ -2269,6 +2387,33 @@ function App() {
           <p>Assigned bands awaiting check-in: <strong>{(operationsDashboard.awaitingCheckin || []).length}</strong></p>
           <p>Pending registrations: <strong>{operationsDashboard.counts.pendingAttendees ?? 0}</strong></p>
         </div>
+        <div className="cc-inventory-panel" style={{marginTop:'20px',overflowX:'auto'}}>
+          <h2>Transportation</h2>
+          <p>Employees who originally opted in for the residence drop facility.</p>
+          <table style={{width:'100%',borderCollapse:'collapse',textAlign:'left'}}>
+            <thead>
+              <tr>
+                <th>Enterprise ID</th>
+                <th>Employee Name</th>
+                <th>Transportation Opted</th>
+                <th>Residential Area</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(operationsDashboard.transportation || []).map((item:any,index:number) => (
+                <tr key={`${item.eid}-${index}`}>
+                  <td>{item.eid}</td>
+                  <td>{item.employee_name}</td>
+                  <td>{item.transportation_opted}</td>
+                  <td>{item.residential_area}</td>
+                </tr>
+              ))}
+              {!(operationsDashboard.transportation || []).length && (
+                <tr><td colSpan={4}>No transportation opt-ins found.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
         <div className="cc-inventory-panel" style={{marginTop:'20px'}}>
           <h2>Search activity</h2>
           <input aria-label="Search dashboard activity" placeholder="Search attendee, EID, band serial or staff ID" value={operationsDashboardSearch} onChange={e => setOperationsDashboardSearch(e.target.value)} />
@@ -2316,6 +2461,86 @@ function App() {
     )}
   </section>
 )}
+          {activePage === 'transportation' && signedInStaff.role === 'admin' && (
+            <section className="cc-inventory-page">
+              <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>&#8592; Back to workspace</button>
+              <p className="section-kicker">ADMIN ONLY / TRANSPORT OPERATIONS</p>
+              <h1>Transportation dashboard.</h1>
+              <p className="login-description">Track employees who opted for residence drop during pre-registration and their confirmation at band assignment.</p>
+
+              {transportationDashboardError && <div className="cc-error">{transportationDashboardError}</div>}
+
+              <div style={{display:'flex',gap:'12px',alignItems:'center',flexWrap:'wrap',margin:'20px 0'}}>
+                <button className="cc-primary-action" type="button" onClick={() => void loadTransportationDashboard()} disabled={transportationDashboardBusy}>
+                  {transportationDashboardBusy ? 'Refreshing...' : 'Refresh now'}
+                </button>
+                <button className="cc-quick-action" type="button" onClick={downloadTransportationCsv} disabled={!transportationDashboard}>
+                  Export transportation CSV
+                </button>
+                <span>Auto-refreshes every 10 seconds</span>
+                {transportationDashboard?.generatedAt && <span>Updated: {formatIndiaDateTime(transportationDashboard.generatedAt)}</span>}
+              </div>
+
+              {!transportationDashboard && !transportationDashboardError && <p>Loading transportation records...</p>}
+
+              {transportationDashboard && (
+                <>
+                  <div className="cc-attendee-summary cc-dashboard-summary">
+                    <div className="summary-saved"><span>Originally opted in</span><strong>{transportationDashboard.counts?.totalOptedIn ?? 0}</strong></div>
+                    <div className="summary-registered"><span>Confirmed YES</span><strong>{transportationDashboard.counts?.confirmedYes ?? 0}</strong></div>
+                    <div className="summary-checkin"><span>Confirmed NO</span><strong>{transportationDashboard.counts?.confirmedNo ?? 0}</strong></div>
+                    <div className="summary-saved"><span>Pending confirmation</span><strong>{transportationDashboard.counts?.pending ?? 0}</strong></div>
+                  </div>
+
+                  <div className="cc-inventory-panel" style={{marginTop:'20px'}}>
+                    <h2>Transportation confirmation records</h2>
+                    <p>Only employees whose original pre-registration response was YES are included. Pending means no confirmation has been recorded during band assignment.</p>
+                    <div style={{display:'flex',gap:'12px',flexWrap:'wrap',margin:'16px 0'}}>
+                      <input aria-label="Search transportation records" placeholder="Search name, EID, address, band or staff ID" value={transportationDashboardSearch} onChange={e => setTransportationDashboardSearch(e.target.value)} style={{flex:'1 1 280px'}} />
+                      <select aria-label="Filter transportation status" value={transportationDashboardFilter} onChange={e => setTransportationDashboardFilter(e.target.value)}>
+                        <option value="ALL">All statuses</option>
+                        <option value="Pending">Pending</option>
+                        <option value="Confirmed YES">Confirmed YES</option>
+                        <option value="Confirmed NO">Confirmed NO</option>
+                      </select>
+                    </div>
+                    <div style={{overflowX:'auto'}}>
+                      <table style={{width:'100%',borderCollapse:'collapse',textAlign:'left',minWidth:'1100px'}}>
+                        <thead>
+                          <tr>
+                            <th>Enterprise ID</th><th>Employee Name</th><th>Department</th><th>Drop Address</th><th>Band Serial</th><th>Confirmation</th><th>Answer</th><th>Confirmed At</th><th>Staff ID</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(transportationDashboard.rows || [])
+                            .filter((item:any) => transportationDashboardFilter === 'ALL' || item.confirmation_status === transportationDashboardFilter)
+                            .filter((item:any) => [item.eid,item.employee_name,item.department,item.residential_address,item.band_serial,item.confirmation_status,item.confirmed_answer,item.confirmed_by_staff_id].some(value => String(value ?? '').toLowerCase().includes(transportationDashboardSearch.toLowerCase())))
+                            .map((item:any,index:number) => (
+                              <tr key={`${item.eid}-${index}`}>
+                                <td>{item.eid || '-'}</td>
+                                <td>{item.employee_name || '-'}</td>
+                                <td>{item.department || '-'}</td>
+                                <td style={{minWidth:'240px',whiteSpace:'normal'}}>{item.residential_address || 'Not provided'}</td>
+                                <td>{item.band_serial || 'Not assigned'}</td>
+                                <td><strong>{item.confirmation_status || 'Pending'}</strong></td>
+                                <td>{item.confirmed_answer || '-'}</td>
+                                <td>{item.confirmed_at ? formatIndiaDateTime(item.confirmed_at) : '-'}</td>
+                                <td>{item.confirmed_by_staff_id || '-'}</td>
+                              </tr>
+                            ))}
+                          {!(transportationDashboard.rows || []).filter((item:any) => transportationDashboardFilter === 'ALL' || item.confirmation_status === transportationDashboardFilter).filter((item:any) => [item.eid,item.employee_name,item.department,item.residential_address,item.band_serial,item.confirmation_status,item.confirmed_answer,item.confirmed_by_staff_id].some(value => String(value ?? '').toLowerCase().includes(transportationDashboardSearch.toLowerCase()))).length && (
+                            <tr><td colSpan={9}>No matching transportation records found.</td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                    <p style={{marginTop:'14px'}}>Showing {(transportationDashboard.rows || []).filter((item:any) => transportationDashboardFilter === 'ALL' || item.confirmation_status === transportationDashboardFilter).filter((item:any) => [item.eid,item.employee_name,item.department,item.residential_address,item.band_serial,item.confirmation_status,item.confirmed_answer,item.confirmed_by_staff_id].some(value => String(value ?? '').toLowerCase().includes(transportationDashboardSearch.toLowerCase()))).length} of {(transportationDashboard.rows || []).length} opted-in employees.</p>
+                  </div>
+                </>
+              )}
+            </section>
+          )}
+
           {activePage === 'inventory' && canManageInventory(signedInStaff) && (
             <section className="cc-inventory-page">
               <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>&#8592; Back to workspace</button>
@@ -2371,7 +2596,20 @@ function App() {
               </section>}
               <section className="cc-inventory-panel"><h2>Assign a preprinted band</h2><p>Register walk-ins first in the Attendees screen. Scan/enter the printed serial and employee ID.</p>
                 <div className="cc-inventory-fields"><label>Wristband serial<input placeholder="ACC057" value={inventorySerial} onChange={e=>setInventorySerial(e.target.value.toUpperCase())}/></label><label>Employee ID<input placeholder="Employee EID" value={inventoryEid} onChange={e=>setInventoryEid(e.target.value)}/></label></div>
-                <button className="cc-primary-action" disabled={inventoryBusy||!inventorySerial.trim()||!inventoryEid.trim()} type="button" onClick={()=>void inventoryAction('/api/inventory/assign',{serial:inventorySerial,eid:inventoryEid})}>Assign band</button>
+                                <button className="dashboard-signout" type="button" disabled={inventoryBusy||!inventoryEid.trim()} onClick={()=>void lookupInventoryAttendee()}>Find employee</button>
+                {inventoryLookupAttendee && <p className="login-description">Employee: <strong>{inventoryLookupAttendee.name}</strong> | EID: {inventoryLookupAttendee.eid} | Department: {inventoryLookupAttendee.department || '-'}</p>}
+                {pendingInventoryTransportation && (
+                  <section className="cc-checkin-panel" role="group" aria-labelledby="cc-inventory-transport-question">
+                    <h2 id="cc-inventory-transport-question">Transportation confirmation</h2>
+                    <p>{pendingInventoryTransportation.attendee.name} already opted for transportation during pre-registration. Will they be availing the drop facility today?</p>
+                    <div className="cc-checkin-actions">
+                      <button className="attendee-save-button" type="button" disabled={inventoryBusy} aria-pressed={inventoryTransportAnswer === 'YES'} onClick={() => setInventoryTransportAnswer('YES')}>Yes, availing the drop</button>
+                      <button className="attendee-cancel-button" type="button" disabled={inventoryBusy} aria-pressed={inventoryTransportAnswer === 'NO'} onClick={() => setInventoryTransportAnswer('NO')}>No, not availing</button>
+                    </div>
+                    <p className="login-description">{inventoryTransportAnswer ? `Selected: ${inventoryTransportAnswer}. Click Assign band to save the confirmation and assign the band.` : 'Select YES or NO before assigning the band.'}</p>
+                  </section>
+                )}
+                <button className="cc-primary-action" type="button" disabled={!inventorySerial.trim()||!inventoryEid.trim()||(!inventoryLookupAttendee)||(pendingInventoryTransportation !== null && !inventoryTransportAnswer)} onClick={()=>void inventoryAction('/api/inventory/assign',{serial:inventorySerial,eid:inventoryEid,...(pendingInventoryTransportation ? {residence_drop_availing:inventoryTransportAnswer} : {})})}>{inventoryBusy ? 'Assigning...' : pendingInventoryTransportation ? 'Confirm & Assign Band' : 'Assign Band'}</button>
               </section>
               {canManageInventory(signedInStaff) && <section className="cc-inventory-panel"><h2>Inventory list</h2><div className="cc-inventory-fields"><label>Search serial number<input placeholder="ACC099" value={inventorySearch} onChange={e=>setInventorySearch(e.target.value.toUpperCase())}/></label><button type="button" className="dashboard-signout" onClick={()=>void loadInventory()}>Refresh</button></div>
                 <div className="cc-inventory-table-wrap"><table className="cc-inventory-table"><thead><tr><th>Serial</th><th>Status</th><th>Employee ID</th><th>Attendee</th></tr></thead><tbody>{inventoryBands.filter(b=>!inventorySearch||b.serial.includes(inventorySearch)).slice(0,10).map(b=><tr key={b.serial}><td>{b.serial}</td><td>{b.status}</td><td>{b.attendee_eid||'—'}</td><td>{b.name||'—'}</td></tr>)}</tbody></table></div><p className="login-description">Showing up to 10 latest inventory records.</p>
@@ -2946,33 +3184,3 @@ function App() {
 }
 
 export default App
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

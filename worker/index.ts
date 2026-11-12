@@ -307,7 +307,7 @@ export default {
     }
     const apiPath = url.pathname
 
-    if (!['/api/attendees', '/api/emergency-lookup', '/api/wristbands', '/api/checkin', '/api/checkins', '/api/inventory', '/api/inventory/generate', '/api/inventory/assign', '/api/inventory/available', '/api/registration/approve', '/api/registration/reject', '/api/inventory/checkin', '/api/admin/operations-dashboard', '/api/admin/employee-prereg/import', '/api/mypmo/upload', '/api/mypmo/lookup'].includes(apiPath)) return json({ error: 'Not found' }, 404)
+    if (!['/api/attendees', '/api/emergency-lookup', '/api/wristbands', '/api/checkin', '/api/checkins', '/api/inventory', '/api/inventory/generate', '/api/inventory/assign', '/api/inventory/attendee-lookup', '/api/inventory/available', '/api/registration/approve', '/api/registration/reject', '/api/inventory/checkin', '/api/admin/operations-dashboard', '/api/admin/transportation-dashboard', '/api/admin/employee-prereg/import', '/api/mypmo/upload', '/api/mypmo/lookup'].includes(apiPath)) return json({ error: 'Not found' }, 404)
 
     let staff: Staff | null
 
@@ -319,6 +319,60 @@ export default {
 
     // OPTION 2 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â separate inventory-first wristbands. Legacy /api/wristbands remains unchanged.
 
+    if (apiPath === '/api/admin/transportation-dashboard' && request.method === 'GET') {
+      if (staff.role !== 'admin') {
+        return json({ error: 'Administrator access required' }, 403)
+      }
+
+      try {
+        const counts = await env.DB.prepare(`
+          SELECT
+            COUNT(*) AS totalOptedIn,
+            SUM(CASE WHEN c.confirmed_answer = 'YES' THEN 1 ELSE 0 END) AS confirmedYes,
+            SUM(CASE WHEN c.confirmed_answer = 'NO' THEN 1 ELSE 0 END) AS confirmedNo,
+            SUM(CASE WHEN c.confirmed_answer IS NULL THEN 1 ELSE 0 END) AS pending
+          FROM attendees a
+          LEFT JOIN transportation_confirmations c ON c.attendee_eid = a.eid
+          WHERE UPPER(TRIM(COALESCE(a.residence_drop_required, ''))) = 'YES'
+        `).first<Record<string, number>>()
+
+        const rows = await env.DB.prepare(`
+          SELECT
+            a.eid,
+            a.name AS employee_name,
+            a.department,
+            a.residential_address,
+            COALESCE(c.band_serial, w.serial) AS band_serial,
+            c.confirmed_answer,
+            CASE
+              WHEN c.confirmed_answer = 'YES' THEN 'Confirmed YES'
+              WHEN c.confirmed_answer = 'NO' THEN 'Confirmed NO'
+              ELSE 'Pending'
+            END AS confirmation_status,
+            c.confirmed_at,
+            u.staff_id AS confirmed_by_staff_id
+          FROM attendees a
+          LEFT JOIN transportation_confirmations c ON c.attendee_eid = a.eid
+          LEFT JOIN wristband_inventory w ON w.attendee_eid = a.eid
+          LEFT JOIN staff_users u ON u.id = c.confirmed_by
+          WHERE UPPER(TRIM(COALESCE(a.residence_drop_required, ''))) = 'YES'
+          ORDER BY
+            CASE WHEN c.confirmed_answer IS NULL THEN 0 ELSE 1 END,
+            a.name COLLATE NOCASE
+        `).all()
+
+        return json({
+          ok: true,
+          generatedAt: new Date().toISOString(),
+          counts: counts ?? { totalOptedIn: 0, confirmedYes: 0, confirmedNo: 0, pending: 0 },
+          rows: rows.results
+        })
+      } catch (error) {
+        console.error('TRANSPORTATION_DASHBOARD_ERROR',
+          error instanceof Error ? error.message : 'Unknown error')
+        return json({ error: 'Could not load transportation dashboard. Check the local database migrations.' }, 500)
+      }
+    }
     if (apiPath === '/api/admin/operations-dashboard' && request.method === 'GET') {
       if (staff.role !== 'admin') {
         return json({ error: 'Administrator access required' }, 403)
@@ -381,13 +435,48 @@ export default {
           LIMIT 200
         `).all()
 
+        const transportationRows = await env.DB.prepare(`
+          SELECT eid, name, residence_drop_required, residential_address
+          FROM attendees
+          WHERE UPPER(TRIM(COALESCE(residence_drop_required, ''))) = 'YES'
+          ORDER BY name COLLATE NOCASE
+        `).all<{
+          eid: string
+          name: string
+          residence_drop_required: string
+          residential_address: string | null
+        }>()
+
+        const knownAreas = [
+          'Kukatpally', 'Ameerpet', 'Gachibowli', 'Madhapur', 'Miyapur',
+          'Kondapur', 'Hitech City', 'Manikonda', 'Banjara Hills',
+          'Jubilee Hills', 'Secunderabad', 'Begumpet', 'LB Nagar',
+          'Dilsukhnagar', 'Uppal', 'Kompally', 'Nizampet', 'Bachupally',
+          'Mehdipatnam', 'Tolichowki', 'Attapur', 'Malkajgiri',
+          'Chandanagar', 'Lingampally', 'Kothapet', 'KPHB'
+        ]
+
+        const transportation = transportationRows.results.map(row => {
+          const address = (row.residential_address || '').toLowerCase()
+          const residentialArea = knownAreas.find(area =>
+            address.includes(area.toLowerCase())
+          )
+          return {
+            eid: row.eid,
+            employee_name: row.name,
+            transportation_opted: 'YES',
+            residential_area: residentialArea || 'Area not identified'
+          }
+        })
+
         return json({
           ok: true,
           generatedAt: new Date().toISOString(),
           counts: counts ?? {},
           assignments: assignments.results,
           checkins: checkins.results,
-          awaitingCheckin: awaitingCheckin.results
+          awaitingCheckin: awaitingCheckin.results,
+          transportation
         })
       } catch (error) {
         console.error('OPERATIONS_DASHBOARD_ERROR',
@@ -597,90 +686,185 @@ export default {
       }
     }
 
+    if (apiPath === '/api/inventory/attendee-lookup' && request.method === 'GET') {
+      if (!canManageInventory(staff)) return json({ error: 'You do not have permission to look up attendees for band assignment' }, 403)
+      const eid = (url.searchParams.get('eid') || '').trim()
+      if (!eid) return json({ error: 'Employee ID is required' }, 400)
+      try {
+        const attendee = await env.DB.prepare(`
+          SELECT eid, name, department, status, residence_drop_required
+          FROM attendees WHERE eid = ?
+        `).bind(eid).first<{
+          eid: string; name: string; department: string | null;
+          status: string; residence_drop_required: string | null
+        }>()
+        if (!attendee) return json({ error: 'Attendee not found. Register walk-ins in Attendees first.' }, 404)
+        if (attendee.status !== 'Registered') return json({ error: 'Only registered attendees can be assigned a wristband' }, 400)
+        const already = await env.DB.prepare(
+          "SELECT serial FROM wristband_inventory WHERE attendee_eid = ?"
+        ).bind(eid).first<{ serial: string }>()
+        if (already) return json({ error: `This attendee already has wristband ${already.serial}` }, 409)
+        return json({
+          ok: true,
+          attendee: {
+            eid: attendee.eid,
+            name: attendee.name,
+            department: attendee.department,
+            residence_drop_required: (attendee.residence_drop_required || '').trim().toUpperCase()
+          }
+        })
+      } catch (error) {
+        console.error('INVENTORY_ATTENDEE_LOOKUP_ERROR', error instanceof Error ? error.message : 'Unknown error')
+        return json({ error: 'Could not look up attendee' }, 500)
+      }
+    }
     if (apiPath === '/api/inventory/assign' && request.method === 'POST') {
-
       if (!canAssignBand(staff.role)) return json({error:'You do not have permission to assign wristbands'},403)
 
-      const body=await readJson(request)
+      const body = await readJson(request)
+      if (!isObject(body) || typeof body.serial !== 'string' || typeof body.eid !== 'string') {
+        return json({error:'Wristband serial and employee ID are required'},400)
+      }
 
-      if (!isObject(body) || typeof body.serial!=='string' || typeof body.eid!=='string') return json({error:'Wristband serial and employee ID are required'},400)
+      const serial = body.serial.trim().toUpperCase()
+      const eid = body.eid.trim()
+      const transportAnswer = typeof body.residence_drop_availing === 'string'
+        ? body.residence_drop_availing.trim().toUpperCase() : ''
 
-      const serial=body.serial.trim().toUpperCase(), eid=body.eid.trim()
+      if (transportAnswer && !['YES','NO'].includes(transportAnswer)) {
+        return json({error:'Transportation answer must be YES or NO'},400)
+      }
 
-      const attendee=await env.DB.prepare("SELECT eid,name,email,department,status FROM attendees WHERE eid=?").bind(eid).first<{eid:string;name:string;email:string;department:string;status:string}>()
+      const attendee = await env.DB.prepare(
+        "SELECT eid,name,email,department,status,residence_drop_required FROM attendees WHERE eid=?"
+      ).bind(eid).first<{eid:string;name:string;email:string;department:string;status:string;residence_drop_required:string|null}>()
 
-      if(!attendee) return json({error:'Attendee not found. Register walk-ins in Attendees first.'},404)
+      if (!attendee) return json({error:'Attendee not found. Register walk-ins in Attendees first.'},404)
+      if (attendee.status !== 'Registered') return json({error:'Only registered attendees can be assigned a wristband'},400)
 
-      if(attendee.status!=='Registered') return json({error:'Only registered attendees can be assigned a wristband'},400)
+      const band = await env.DB.prepare(
+        "SELECT id,serial,status,attendee_eid FROM wristband_inventory WHERE serial=?"
+      ).bind(serial).first<{id:string;serial:string;status:string;attendee_eid:string|null}>()
 
-      const band=await env.DB.prepare("SELECT id,serial,status,attendee_eid FROM wristband_inventory WHERE serial=?").bind(serial).first<{id:string;serial:string;status:string;attendee_eid:string|null}>()
+      if (!band) return json({error:'Wristband serial not found'},404)
+      if (band.status !== 'Available' || band.attendee_eid) return json({error:`${serial} is not available (${band.status})`},409)
 
-      if(!band) return json({error:'Wristband serial not found'},404)
+      const already = await env.DB.prepare(
+        "SELECT serial FROM wristband_inventory WHERE attendee_eid=?"
+      ).bind(eid).first<{serial:string}>()
 
-      if(band.status!=='Available'||band.attendee_eid) return json({error:`${serial} is not available (${band.status})`},409)
+      if (already) return json({error:`This attendee already has wristband ${already.serial}`},409)
 
-      const already=await env.DB.prepare("SELECT serial FROM wristband_inventory WHERE attendee_eid=?").bind(eid).first<{serial:string}>()
-
-      if(already) return json({error:`This attendee already has wristband ${already.serial}`},409)
+      const originalTransportOptIn = (attendee.residence_drop_required || '').trim().toUpperCase()
+      if (originalTransportOptIn === 'YES' && !transportAnswer) {
+        return json({
+          ok:true,
+          needs_transportation_confirmation:true,
+          serial,
+          attendee:{eid:attendee.eid,name:attendee.name,department:attendee.department,residence_drop_required:'YES'}
+        })
+      }
 
       try {
+        const upd = await env.DB.prepare(
+          "UPDATE wristband_inventory SET status='Assigned',attendee_eid=?,assigned_at=CURRENT_TIMESTAMP WHERE id=? AND status='Available' AND attendee_eid IS NULL"
+        ).bind(eid,band.id).run()
 
-        const upd=await env.DB.prepare("UPDATE wristband_inventory SET status='Assigned',attendee_eid=?,assigned_at=CURRENT_TIMESTAMP WHERE id=? AND status='Available' AND attendee_eid IS NULL").bind(eid,band.id).run()
+        if (upd.meta.changes !== 1) {
+          return json({error:'Wristband was just assigned by another staff member. Refresh inventory.'},409)
+        }
 
-        if(upd.meta.changes!==1) return json({error:'Wristband was just assigned by another staff member. Refresh inventory.'},409)
+        try {
+          await env.DB.prepare(
+            "INSERT INTO wristband_inventory_audit (id,wristband_id,serial,attendee_eid,action,performed_by) VALUES (?,?,?,?,'ASSIGNED',?)"
+          ).bind(crypto.randomUUID(),band.id,serial,eid,staff.id).run()
 
-        await env.DB.prepare("INSERT INTO wristband_inventory_audit (id,wristband_id,serial,attendee_eid,action,performed_by) VALUES (?,?,?,?,'ASSIGNED',?)").bind(crypto.randomUUID(),band.id,serial,eid,staff.id).run()
+          if (originalTransportOptIn === 'YES') {
+            await env.DB.prepare(`
+              INSERT INTO transportation_confirmations
+                (id,attendee_eid,wristband_id,band_serial,confirmed_answer,confirmed_by)
+              VALUES (?,?,?,?,?,?)
+              ON CONFLICT(attendee_eid) DO UPDATE SET
+                wristband_id=excluded.wristband_id,
+                band_serial=excluded.band_serial,
+                confirmed_answer=excluded.confirmed_answer,
+                confirmed_by=excluded.confirmed_by,
+                confirmed_at=CURRENT_TIMESTAMP
+            `).bind(crypto.randomUUID(),eid,band.id,serial,transportAnswer,staff.id).run()
+          }
+        } catch (saveError) {
+          await env.DB.prepare(
+            "UPDATE wristband_inventory SET status='Available',attendee_eid=NULL,assigned_at=NULL WHERE id=? AND attendee_eid=?"
+          ).bind(band.id,eid).run()
+          await env.DB.prepare(
+            "DELETE FROM wristband_inventory_audit WHERE wristband_id=? AND attendee_eid=? AND action='ASSIGNED'"
+          ).bind(band.id,eid).run()
+          throw saveError
+        }
 
-        return json({ok:true,serial,attendee:{eid:attendee.eid,name:attendee.name,department:attendee.department},status:'Assigned'},201)
-
-      } catch(e) { console.error('INVENTORY_ASSIGN_ERROR',e instanceof Error?e.message:'Unknown error'); return json({error:'Assignment failed; refresh and verify the attendee and band status.'},409) }
-
+        return json({
+          ok:true,
+          serial,
+          attendee:{eid:attendee.eid,name:attendee.name,department:attendee.department},
+          status:'Assigned',
+          transportationConfirmation:originalTransportOptIn === 'YES' ? transportAnswer : null
+        },201)
+      } catch(e) {
+        console.error('INVENTORY_ASSIGN_ERROR',e instanceof Error?e.message:'Unknown error')
+        return json({error:'Assignment failed; refresh and verify the attendee and band status.'},409)
+      }
     }
-
     if (apiPath === '/api/inventory/checkin' && request.method === 'POST') {
-
       if (!canCheckin(staff)) return json({error:'You do not have permission to check in attendees'},403)
 
-      const body=await readJson(request)
+      const body = await readJson(request)
+      if (!isObject(body) || typeof body.serial !== 'string') return json({error:'Wristband serial is required'},400)
 
-      if(!isObject(body)||typeof body.serial!=='string') return json({error:'Wristband serial is required'},400)
+      const serial = body.serial.trim().toUpperCase()
+      const band = await env.DB.prepare(`
+        SELECT w.id,w.serial,w.status,w.attendee_eid,a.name,a.email,a.department,a.status AS attendee_status
+        FROM wristband_inventory w
+        LEFT JOIN attendees a ON a.eid=w.attendee_eid
+        WHERE w.serial=?
+      `).bind(serial).first<{id:string;serial:string;status:string;attendee_eid:string|null;name:string|null;email:string|null;department:string|null;attendee_status:string|null}>()
 
-      const serial=body.serial.trim().toUpperCase()
+      if (!band) return json({error:'Wristband not found'},404)
+      if (band.status === 'Available') return json({error:'This wristband is not assigned yet'},409)
+      if (band.status === 'Revoked') return json({error:'This wristband has been revoked'},409)
+      if (band.status === 'Checked In') return json({error:'This wristband has already been checked in'},409)
+      if (!band.attendee_eid || band.attendee_status !== 'Registered') return json({error:'Assigned attendee is not eligible for check-in'},400)
 
-      const band=await env.DB.prepare("SELECT w.id,w.serial,w.status,w.attendee_eid,a.name,a.email,a.department,a.status AS attendee_status FROM wristband_inventory w LEFT JOIN attendees a ON a.eid=w.attendee_eid WHERE w.serial=?").bind(serial).first<{id:string;serial:string;status:string;attendee_eid:string|null;name:string|null;email:string|null;department:string|null;attendee_status:string|null}>()
+      const prior = await env.DB.prepare(
+        'SELECT checked_in_at FROM attendee_checkins WHERE attendee_eid=?'
+      ).bind(band.attendee_eid).first<{checked_in_at:string}>()
 
-      if(!band) return json({error:'Wristband not found'},404)
-
-      if(band.status==='Available') return json({error:'This wristband is not assigned yet'},409)
-
-      if(band.status==='Revoked') return json({error:'This wristband has been revoked'},409)
-
-      if(band.status==='Checked In') return json({error:'This wristband has already been checked in'},409)
-
-      if(!band.attendee_eid||band.attendee_status!=='Registered') return json({error:'Assigned attendee is not eligible for check-in'},400)
-
-      const prior=await env.DB.prepare('SELECT checked_in_at FROM attendee_checkins WHERE attendee_eid=?').bind(band.attendee_eid).first<{checked_in_at:string}>()
-
-      if(prior) return json({error:`Attendee already checked in at ${prior.checked_in_at}`},409)
+      if (prior) return json({error:`Attendee already checked in at ${prior.checked_in_at}`},409)
 
       try {
+        await env.DB.prepare(
+          "INSERT INTO attendee_checkins (id,attendee_eid,checked_in_by,method) VALUES (?,?,?,'QR')"
+        ).bind(crypto.randomUUID(),band.attendee_eid,staff.id).run()
 
-        await env.DB.prepare("INSERT INTO attendee_checkins (id,attendee_eid,checked_in_by,method) VALUES (?,?,?,'QR')").bind(crypto.randomUUID(),band.attendee_eid,staff.id).run()
+        const upd = await env.DB.prepare(
+          "UPDATE wristband_inventory SET status='Checked In',checked_in_at=CURRENT_TIMESTAMP,checked_in_by=? WHERE id=? AND status='Assigned'"
+        ).bind(staff.id,band.id).run()
 
-        const upd=await env.DB.prepare("UPDATE wristband_inventory SET status='Checked In',checked_in_at=CURRENT_TIMESTAMP,checked_in_by=? WHERE id=? AND status='Assigned'").bind(staff.id,band.id).run()
+        if (upd.meta.changes !== 1) return json({error:'Check-in state changed; contact the event administrator to reconcile.'},409)
 
-        if(upd.meta.changes!==1) return json({error:'Check-in state changed; contact the event administrator to reconcile.'},409)
+        await env.DB.prepare(
+          "INSERT INTO wristband_inventory_audit (id,wristband_id,serial,attendee_eid,action,performed_by) VALUES (?,?,?,?,'CHECKED_IN',?)"
+        ).bind(crypto.randomUUID(),band.id,serial,band.attendee_eid,staff.id).run()
 
-        await env.DB.prepare("INSERT INTO wristband_inventory_audit (id,wristband_id,serial,attendee_eid,action,performed_by) VALUES (?,?,?,?,'CHECKED_IN',?)").bind(crypto.randomUUID(),band.id,serial,band.attendee_eid,staff.id).run()
-
-        const checked=await env.DB.prepare('SELECT checked_in_at FROM attendee_checkins WHERE attendee_eid=?').bind(band.attendee_eid).first<{checked_in_at:string}>()
+        const checked = await env.DB.prepare(
+          'SELECT checked_in_at FROM attendee_checkins WHERE attendee_eid=?'
+        ).bind(band.attendee_eid).first<{checked_in_at:string}>()
 
         return json({ok:true,serial,attendee:{eid:band.attendee_eid,name:band.name,department:band.department},checked_in_at:checked?.checked_in_at},201)
-
-      } catch(e) { console.error('INVENTORY_CHECKIN_ERROR',e instanceof Error?e.message:'Unknown error'); return json({error:'Check-in failed or attendee was already checked in'},409) }
-
+      } catch(e) {
+        console.error('INVENTORY_CHECKIN_ERROR',e instanceof Error?e.message:'Unknown error')
+        return json({error:'Check-in failed or attendee was already checked in'},409)
+      }
     }
-
     // MYPMO_ROUTES_START
     // MyPMO employee data is kept separate from attendee registrations.
 
@@ -866,6 +1050,7 @@ export default {
           const colleague = typeof item.colleague_emergency_contact_number === 'string' ? item.colleague_emergency_contact_number.trim() : ''
           const colleagueEid = typeof item.colleague_enterprise_id === 'string' ? item.colleague_enterprise_id.trim() : ''
           const address = typeof item.residential_address === 'string' ? item.residential_address.trim() : ''
+          const residenceDropRequired = typeof item.residence_drop_required === 'string' && ['YES', 'NO'].includes(item.residence_drop_required.trim().toUpperCase()) ? item.residence_drop_required.trim().toUpperCase() : null
 
           if (!eid || eid.length > 100 || !name || name.length > 200 ||
               !email || email.length > 254 ||
@@ -915,13 +1100,13 @@ export default {
             (eid, name, email, department, contact_number,
              family_emergency_contact_number, colleague_emergency_contact_number,
              project, project_lead, status, registration_source,
-             residential_address, colleague_enterprise_id,
+             residential_address, residence_drop_required, colleague_enterprise_id,
              family_emergency_contact_name, family_emergency_contact_relation)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Registered', 'PRE_EVENT_IMPORT', ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Registered', 'PRE_EVENT_IMPORT', ?, ?, ?, ?, ?)
           `).bind(
             eid, name, email, project, contact,
             family, colleague, project, lead,
-            address, colleagueEid, familyName, familyRelation
+            address, residenceDropRequired, colleagueEid, familyName, familyRelation
           ).run()
 
           if (result.meta.changes > 0) inserted++
@@ -1240,45 +1425,49 @@ export default {
     }
 
     if (apiPath === '/api/checkin' && request.method === 'POST') {
+      if (!canCheckin(staff)) return json({error:'You do not have permission to check in attendees'},403)
 
-      if (!canCheckin(staff)) return json({ error: 'You do not have permission to check in attendees' }, 403)
-
-      const body = await readJson(request); if (!isObject(body)) return json({ error: 'Provide a QR token or employee ID' }, 400)
+      const body = await readJson(request)
+      if (!isObject(body)) return json({error:'Provide a QR token or employee ID'},400)
 
       const token = typeof body.token === 'string' ? body.token.trim() : ''
-
       const eidInput = typeof body.eid === 'string' ? body.eid.trim() : ''
 
-      if (staff.role === 'checkin' && eidInput) return json({ error: 'Manual employee ID check-in is not permitted for this account. Scan the QR wristband.' }, 403)
-
-      if (!token && !eidInput) return json({ error: 'Provide a QR token or employee ID' }, 400)
+      if (staff.role === 'checkin' && eidInput) {
+        return json({error:'Manual employee ID check-in is not permitted for this account. Scan the QR wristband.'},403)
+      }
+      if (!token && !eidInput) return json({error:'Provide a QR token or employee ID'},400)
 
       const attendee = token
+        ? await env.DB.prepare("SELECT a.eid,a.name,a.email,a.department,a.status FROM wristbands w JOIN attendees a ON a.eid=w.attendee_eid WHERE w.qr_token=? AND w.status='Assigned'")
+            .bind(token).first<{eid:string;name:string;email:string;department:string;status:AttendeeStatus}>()
+        : await env.DB.prepare('SELECT eid,name,email,department,status FROM attendees WHERE eid=?')
+            .bind(eidInput).first<{eid:string;name:string;email:string;department:string;status:AttendeeStatus}>()
 
-        ? await env.DB.prepare("SELECT a.eid, a.name, a.email, a.department, a.status FROM wristbands w JOIN attendees a ON a.eid = w.attendee_eid WHERE w.qr_token = ? AND w.status = 'Assigned'").bind(token).first<{ eid: string; name: string; email: string; department: string; status: AttendeeStatus }>()
+      if (!attendee) return json({error:token ? 'QR wristband not found or no longer valid' : 'Attendee not found'},404)
+      if (attendee.status !== 'Registered') return json({error:`Cannot check in an attendee with status ${attendee.status}`},400)
 
-        : await env.DB.prepare('SELECT eid, name, email, department, status FROM attendees WHERE eid = ?').bind(eidInput).first<{ eid: string; name: string; email: string; department: string; status: AttendeeStatus }>()
+      const already = await env.DB.prepare(
+        'SELECT checked_in_at FROM attendee_checkins WHERE attendee_eid=?'
+      ).bind(attendee.eid).first<{checked_in_at:string}>()
 
-      if (!attendee) return json({ error: token ? 'QR wristband not found or no longer valid' : 'Attendee not found' }, 404)
-
-      if (attendee.status !== 'Registered') return json({ error: `Cannot check in an attendee with status ${attendee.status}` }, 400)
-
-      const already = await env.DB.prepare('SELECT checked_in_at FROM attendee_checkins WHERE attendee_eid = ?').bind(attendee.eid).first<{ checked_in_at: string }>()
-
-      if (already) return json({ error: `Already checked in at ${already.checked_in_at}` }, 409)
+      if (already) return json({error:`Already checked in at ${already.checked_in_at}`},409)
 
       const checkinId = crypto.randomUUID()
+      try {
+        await env.DB.prepare(
+          'INSERT INTO attendee_checkins (id,attendee_eid,checked_in_by,method) VALUES (?,?,?,?)'
+        ).bind(checkinId,attendee.eid,staff.id,token ? 'QR' : 'EID').run()
+      } catch {
+        return json({error:'This attendee has already been checked in'},409)
+      }
 
-      try { await env.DB.prepare('INSERT INTO attendee_checkins (id, attendee_eid, checked_in_by, method) VALUES (?, ?, ?, ?)').bind(checkinId, attendee.eid, staff.id, token ? 'QR' : 'EID').run() }
+      const checked = await env.DB.prepare(
+        'SELECT checked_in_at FROM attendee_checkins WHERE attendee_eid=?'
+      ).bind(attendee.eid).first<{checked_in_at:string}>()
 
-      catch { return json({ error: 'This attendee has already been checked in' }, 409) }
-
-      const checked = await env.DB.prepare('SELECT checked_in_at FROM attendee_checkins WHERE attendee_eid = ?').bind(attendee.eid).first<{ checked_in_at: string }>()
-
-      return json({ ok: true, attendee: { ...attendee, checked_in_at: checked?.checked_in_at ?? new Date().toISOString() } }, 201)
-
+      return json({ok:true,attendee:{...attendee,checked_in_at:checked?.checked_in_at ?? new Date().toISOString()}},201)
     }
-
     if (apiPath === '/api/checkins' && request.method === 'GET') {
 
       if (!canCheckin(staff)) return json({ error: 'You do not have permission to view check-ins' }, 403)
@@ -1294,24 +1483,3 @@ export default {
   },
 
 } satisfies ExportedHandler<Env>
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -4241,3 +4241,69 @@ button:disabled { cursor: not-allowed; opacity: .58; }
   .cc-qr-grid { grid-template-columns:minmax(0,1fr); }
   .registration-summary { gap:8px; }
 }
+
+
+/* Dashboard cleanup: stable widths, readable navigation and non-overflowing tiles */
+.dashboard-page .dashboard-content { width: min(100%, 1680px); max-width: 1680px; padding-left: clamp(16px, 2.2vw, 36px); padding-right: clamp(16px, 2.2vw, 36px); }
+.dashboard-page .cc-command-center { width: 100%; max-width: 1560px; grid-template-columns: 220px minmax(0, 1fr); gap: 20px; margin: 22px auto 44px; }
+.cc-command-sidebar { min-width: 0; min-height: 640px; padding: 20px 13px 15px; }
+.cc-sidebar-profile { min-width: 0; }
+.cc-sidebar-profile > div { min-width: 0; }
+.cc-sidebar-link { min-width: 0; gap: 10px; white-space: nowrap; }
+.cc-sidebar-link span { width: 30px; min-width: 30px; height: 28px; display: inline-grid; place-items: center; border: 1px solid rgba(216,184,121,.22); border-radius: 8px; background: rgba(216,184,121,.08); font-size: 9px; font-weight: 900; letter-spacing: .02em; }
+.cc-command-main { min-width: 0; }
+.cc-command-heading { align-items: center; }
+.cc-metric-card { min-width: 0; gap: 12px; padding: 16px; }
+.cc-metric-icon { width: 42px; min-width: 42px; overflow: hidden; font-size: 10px; font-weight: 900; letter-spacing: .02em; }
+.cc-metric-card > div { min-width: 0; }
+.cc-metric-card small, .cc-metric-card div span { overflow-wrap: anywhere; }
+.cc-action-section { min-width: 0; padding: clamp(18px, 2vw, 26px); }
+.cc-checkin-feature { min-width: 0; }
+.cc-feature-symbol, .cc-tile-icon { overflow: hidden; font-size: 11px; font-weight: 900; letter-spacing: .02em; }
+.cc-feature-copy, .cc-action-tile > span:nth-child(2) { min-width: 0; overflow-wrap: anywhere; }
+.cc-feature-cta { white-space: nowrap; }
+.cc-action-tile { min-width: 0; }
+.cc-action-tile > b { flex: none; font-size: 11px; white-space: nowrap; }
+.cc-command-footer span { min-width: 0; }
+@media (max-width: 1100px) { .dashboard-page .cc-command-center { grid-template-columns: 205px minmax(0,1fr); gap: 14px; } .cc-metric-strip { grid-template-columns: repeat(3,minmax(0,1fr)); } .cc-metric-card { padding: 12px; } .cc-metric-icon { display: none; } .cc-action-section { padding: 17px; } }
+@media (max-width: 760px) { .dashboard-page .dashboard-content { padding: 0 12px 28px; } .dashboard-page .cc-command-center { width: 100%; grid-template-columns: minmax(0,1fr); margin: 12px auto 28px; } .cc-command-sidebar { min-height: 0; position: static; } .cc-sidebar-link { white-space: normal; } .cc-metric-strip { grid-template-columns: repeat(3,minmax(0,1fr)); } .cc-metric-card { min-height: 90px; } .cc-action-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@media (max-width: 480px) { .cc-metric-strip { grid-template-columns: 1fr; } .cc-metric-card { min-height: 72px; display: flex; } .cc-metric-icon { display: grid; } .cc-action-grid { grid-template-columns: 1fr; } .cc-checkin-feature { flex-wrap: wrap; } .cc-feature-cta { margin-left: 0; } }
+
+/* Band Inventory: keep transportation confirmation content inside its card */
+.cc-inventory-panel > .cc-checkin-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.cc-inventory-panel > .cc-checkin-panel > * {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.cc-inventory-panel > .cc-checkin-panel p {
+  overflow-wrap: anywhere;
+  line-height: 1.65;
+}
+
+.cc-inventory-panel > .cc-checkin-panel .cc-checkin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.cc-inventory-panel > .cc-checkin-panel .cc-checkin-actions button {
+  flex: 1 1 220px;
+  min-width: 0;
+  white-space: normal;
+}
