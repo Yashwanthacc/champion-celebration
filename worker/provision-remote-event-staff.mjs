@@ -1,4 +1,4 @@
-﻿import { randomBytes, randomUUID, webcrypto } from "node:crypto";
+import { randomBytes, randomUUID, webcrypto } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -75,7 +75,7 @@ async function main() {
     console.log("Credentials saved locally to event-staff-remote-temporary-passwords.txt");
     console.log("Existing accounts were preserved by ON CONFLICT DO NOTHING.");
   } finally {
-    try { await import("node:fs/promises").then(fs => fs.unlink(sqlPath)); } catch {}
+    try { await import("node:fs/promises").then(fs => fs.unlink(sqlPath)); } catch { /* Temporary SQL file cleanup is best-effort. */ }
   }
 }
 

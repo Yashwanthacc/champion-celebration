@@ -5,7 +5,19 @@ import reactHooks from 'eslint-plugin-react-hooks'
 import reactRefresh from 'eslint-plugin-react-refresh'
 
 export default tseslint.config(
-  { ignores: ['dist/**', 'node_modules/**', '**/*.bak', '**/*.before-*'] },
+  {
+    ignores: [
+      'dist/**',
+      'node_modules/**',
+      '.wrangler/**',
+      'worker-dry-run-check/**',
+      '**/*backup*/**',
+      'mypmo-safe-patch-*/**',
+      '**/*.bak',
+      '**/*.before-*',
+      'worker-configuration.d.ts',
+    ],
+  },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
@@ -20,6 +32,18 @@ export default tseslint.config(
     rules: {
       ...reactHooks.configs.flat.recommended.rules,
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
+    },
+  },
+  {
+    files: ['**/*.{mjs,cjs}'],
+    languageOptions: {
+      globals: { ...globals.node, ...globals.commonjs },
+    },
+  },
+  {
+    files: ['**/*.cjs'],
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
     },
   },
 )

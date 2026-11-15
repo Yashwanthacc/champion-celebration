@@ -4307,3 +4307,72 @@ button:disabled { cursor: not-allowed; opacity: .58; }
   min-width: 0;
   white-space: normal;
 }
+
+
+/* Dedicated Band Inventory transportation confirmation layout */
+.cc-inventory-transport-confirmation {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  align-items: stretch;
+  gap: 14px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+  margin: 18px 0 !important;
+}
+
+.cc-inventory-transport-confirmation > * {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.cc-inventory-transport-confirmation p {
+  overflow-wrap: anywhere;
+  line-height: 1.65;
+  margin: 0;
+}
+
+.cc-inventory-transport-actions {
+  display: flex !important;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.cc-inventory-transport-actions button {
+  flex: 1 1 220px;
+  width: auto !important;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 52px;
+  margin: 0 !important;
+  justify-content: center !important;
+  text-align: center !important;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  box-sizing: border-box;
+}
+
+.cc-sidebar-link span {
+  overflow: hidden;
+  text-overflow: clip;
+}
+
+@media (max-width: 600px) {
+  .cc-inventory-transport-actions {
+    flex-direction: column;
+  }
+  .cc-inventory-transport-actions button {
+    flex: 1 1 auto;
+    width: 100% !important;
+  }
+}

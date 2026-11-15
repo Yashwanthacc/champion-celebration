@@ -2,7 +2,6 @@
 
 import { verifyPassword } from './passwords'
 
-import * as XLSX from 'xlsx'
 
 import { createSessionToken, hashSessionToken } from './sessions'
 
@@ -13,6 +12,16 @@ type Role = 'admin' | 'registration' | 'inventory' | 'checkin' | 'viewer'
 type Staff = { id: string; staff_id: string; role: Role }
 
 type AttendeeStatus = 'Registered' | 'Pending' | 'Cancelled'
+
+type EmergencyLookupRow = {
+  eid: string
+  name: string
+  contact_number: string | null
+  family_emergency_contact_number: string | null
+  colleague_emergency_contact_number: string | null
+  project: string | null
+  status: AttendeeStatus
+}
 
 type Attendee = { eid: string; name: string; email: string; department: string; contact_number?: string | null; family_emergency_contact_number?: string | null; colleague_emergency_contact_number?: string | null; project?: string | null; project_lead?: string | null; status: AttendeeStatus; created_at: string }
 
@@ -766,40 +775,34 @@ export default {
       }
 
       try {
-        const upd = await env.DB.prepare(
-          "UPDATE wristband_inventory SET status='Assigned',attendee_eid=?,assigned_at=CURRENT_TIMESTAMP WHERE id=? AND status='Available' AND attendee_eid IS NULL"
-        ).bind(eid,band.id).run()
-
-        if (upd.meta.changes !== 1) {
-          return json({error:'Wristband was just assigned by another staff member. Refresh inventory.'},409)
-        }
-
-        try {
-          await env.DB.prepare(
-            "INSERT INTO wristband_inventory_audit (id,wristband_id,serial,attendee_eid,action,performed_by) VALUES (?,?,?,?,'ASSIGNED',?)"
-          ).bind(crypto.randomUUID(),band.id,serial,eid,staff.id).run()
-
-          if (originalTransportOptIn === 'YES') {
-            await env.DB.prepare(`
+        const statements = [
+          env.DB.prepare(
+            "UPDATE wristband_inventory SET status='Assigned',attendee_eid=?,assigned_at=CURRENT_TIMESTAMP WHERE id=? AND status='Available' AND attendee_eid IS NULL"
+          ).bind(eid,band.id),
+          env.DB.prepare(
+            "INSERT INTO wristband_inventory_audit (id,wristband_id,serial,attendee_eid,action,performed_by) SELECT ?,?,?,?,'ASSIGNED',? WHERE changes()=1 AND EXISTS (SELECT 1 FROM wristband_inventory WHERE id=? AND status='Assigned' AND attendee_eid=?)"
+          ).bind(crypto.randomUUID(),band.id,serial,eid,staff.id,band.id,eid),
+          ...(originalTransportOptIn === 'YES' ? [
+            env.DB.prepare(`
               INSERT INTO transportation_confirmations
                 (id,attendee_eid,wristband_id,band_serial,confirmed_answer,confirmed_by)
-              VALUES (?,?,?,?,?,?)
+              SELECT ?,?,?,?,?,?
+              WHERE changes()=1 AND EXISTS (
+                SELECT 1 FROM wristband_inventory WHERE id=? AND status='Assigned' AND attendee_eid=?
+              )
               ON CONFLICT(attendee_eid) DO UPDATE SET
                 wristband_id=excluded.wristband_id,
                 band_serial=excluded.band_serial,
                 confirmed_answer=excluded.confirmed_answer,
                 confirmed_by=excluded.confirmed_by,
                 confirmed_at=CURRENT_TIMESTAMP
-            `).bind(crypto.randomUUID(),eid,band.id,serial,transportAnswer,staff.id).run()
-          }
-        } catch (saveError) {
-          await env.DB.prepare(
-            "UPDATE wristband_inventory SET status='Available',attendee_eid=NULL,assigned_at=NULL WHERE id=? AND attendee_eid=?"
-          ).bind(band.id,eid).run()
-          await env.DB.prepare(
-            "DELETE FROM wristband_inventory_audit WHERE wristband_id=? AND attendee_eid=? AND action='ASSIGNED'"
-          ).bind(band.id,eid).run()
-          throw saveError
+            `).bind(crypto.randomUUID(),eid,band.id,serial,transportAnswer,staff.id,band.id,eid)
+          ] : [])
+        ]
+
+        const results = await env.DB.batch(statements)
+        if (results[0]?.meta.changes !== 1) {
+          return json({error:'Wristband was just assigned by another staff member. Refresh inventory.'},409)
         }
 
         return json({
@@ -841,19 +844,21 @@ export default {
       if (prior) return json({error:`Attendee already checked in at ${prior.checked_in_at}`},409)
 
       try {
-        await env.DB.prepare(
-          "INSERT INTO attendee_checkins (id,attendee_eid,checked_in_by,method) VALUES (?,?,?,'QR')"
-        ).bind(crypto.randomUUID(),band.attendee_eid,staff.id).run()
+        const results = await env.DB.batch([
+          env.DB.prepare(
+            "UPDATE wristband_inventory SET status='Checked In',checked_in_at=CURRENT_TIMESTAMP,checked_in_by=? WHERE id=? AND status='Assigned' AND attendee_eid=? AND checked_in_at IS NULL"
+          ).bind(staff.id,band.id,band.attendee_eid),
+          env.DB.prepare(
+            "INSERT INTO attendee_checkins (id,attendee_eid,checked_in_by,method) SELECT ?,?,?,'QR' WHERE changes()=1 AND EXISTS (SELECT 1 FROM wristband_inventory WHERE id=? AND status='Checked In' AND attendee_eid=?)"
+          ).bind(crypto.randomUUID(),band.attendee_eid,staff.id,band.id,band.attendee_eid),
+          env.DB.prepare(
+            "INSERT INTO wristband_inventory_audit (id,wristband_id,serial,attendee_eid,action,performed_by) SELECT ?,?,?,?,'CHECKED_IN',? WHERE changes()=1 AND EXISTS (SELECT 1 FROM wristband_inventory WHERE id=? AND status='Checked In' AND attendee_eid=?) AND EXISTS (SELECT 1 FROM attendee_checkins WHERE attendee_eid=?)"
+          ).bind(crypto.randomUUID(),band.id,serial,band.attendee_eid,staff.id,band.id,band.attendee_eid,band.attendee_eid)
+        ])
 
-        const upd = await env.DB.prepare(
-          "UPDATE wristband_inventory SET status='Checked In',checked_in_at=CURRENT_TIMESTAMP,checked_in_by=? WHERE id=? AND status='Assigned'"
-        ).bind(staff.id,band.id).run()
-
-        if (upd.meta.changes !== 1) return json({error:'Check-in state changed; contact the event administrator to reconcile.'},409)
-
-        await env.DB.prepare(
-          "INSERT INTO wristband_inventory_audit (id,wristband_id,serial,attendee_eid,action,performed_by) VALUES (?,?,?,?,'CHECKED_IN',?)"
-        ).bind(crypto.randomUUID(),band.id,serial,band.attendee_eid,staff.id).run()
+        if (results[0]?.meta.changes !== 1) {
+          return json({error:'Check-in state changed; refresh and verify the wristband status.'},409)
+        }
 
         const checked = await env.DB.prepare(
           'SELECT checked_in_at FROM attendee_checkins WHERE attendee_eid=?'
@@ -1149,13 +1154,13 @@ export default {
                  a.project, a.status
           FROM attendees a
         `
-        let attendee: any = null
-        let results: any[] = []
+        let attendee: EmergencyLookupRow | null = null
+        let results: EmergencyLookupRow[] = []
 
         if (mode === 'eid') {
           attendee = await env.DB.prepare(
             fields + " WHERE a.eid = ? COLLATE NOCASE AND a.status != 'Cancelled' LIMIT 1"
-          ).bind(query).first()
+          ).bind(query).first<EmergencyLookupRow>()
         } else if (mode === 'qr') {
           attendee = await env.DB.prepare(`
             ${fields}
@@ -1163,7 +1168,7 @@ export default {
             WHERE w.qr_token = ? AND w.status = 'Assigned'
               AND a.status != 'Cancelled'
             LIMIT 1
-          `).bind(query).first()
+          `).bind(query).first<EmergencyLookupRow>()
 
           if (!attendee) {
             attendee = await env.DB.prepare(`
@@ -1172,7 +1177,7 @@ export default {
               WHERE w.qr_token = ? AND w.status IN ('Assigned', 'Checked In')
                 AND a.status != 'Cancelled'
               LIMIT 1
-            `).bind(query).first()
+            `).bind(query).first<EmergencyLookupRow>()
           }
         } else if (mode === 'serial') {
           attendee = await env.DB.prepare(`
@@ -1182,7 +1187,7 @@ export default {
               AND w.status IN ('Assigned', 'Checked In')
               AND a.status != 'Cancelled'
             LIMIT 1
-          `).bind(query.toUpperCase()).first()
+          `).bind(query.toUpperCase()).first<EmergencyLookupRow>()
         } else {
           const term = `%${query.replace(/[%_]/g, '')}%`
           const result = await env.DB.prepare(`
@@ -1191,8 +1196,8 @@ export default {
               AND (a.eid LIKE ? COLLATE NOCASE OR a.name LIKE ? COLLATE NOCASE)
             ORDER BY a.name ASC
             LIMIT 20
-          `).bind(term, term).all()
-          results = result.results as any[]
+          `).bind(term, term).all<EmergencyLookupRow>()
+          results = result.results
         }
 
         if (mode !== 'search') {

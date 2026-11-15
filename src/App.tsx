@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 
 import QRCode from 'qrcode'
 import * as XLSX from 'xlsx'
@@ -51,6 +51,99 @@ type Attendee = {
 
 }
 
+type EmergencyLookupAttendee = {
+  eid: string
+  name: string
+  contact_number: string | null
+  family_emergency_contact_number: string | null
+  colleague_emergency_contact_number: string | null
+  project: string | null
+  status: string
+}
+
+type OperationsDashboardCounts = {
+  totalAttendees?: number
+  registeredAttendees?: number
+  preEventRegistrations?: number
+  liveRegistrations?: number
+  pendingAttendees?: number
+  cancelledAttendees?: number
+  attendeesWithoutBands?: number
+  availableBands?: number
+  assignedBands?: number
+  checkedInBands?: number
+  revokedBands?: number
+  totalCheckins?: number
+}
+
+type OperationsAssignment = {
+  serial: string | null
+  eid: string | null
+  attendee_name: string | null
+  action: string
+  performed_at: string
+  details: string | null
+  staff_id: string | null
+}
+
+type OperationsCheckin = {
+  eid: string
+  attendee_name: string | null
+  serial: string | null
+  checked_in_at: string
+  method: string
+  staff_id: string | null
+}
+
+type AwaitingCheckin = {
+  serial: string
+  eid: string | null
+  attendee_name: string | null
+  assigned_at: string
+}
+
+type OperationsTransportation = {
+  eid: string
+  employee_name: string
+  transportation_opted: string
+  residential_area: string
+}
+
+type OperationsDashboard = {
+  ok: boolean
+  generatedAt: string
+  counts: OperationsDashboardCounts
+  assignments: OperationsAssignment[]
+  checkins: OperationsCheckin[]
+  awaitingCheckin: AwaitingCheckin[]
+  transportation: OperationsTransportation[]
+}
+
+type TransportationDashboardCounts = {
+  totalOptedIn: number
+  confirmedYes: number | null
+  confirmedNo: number | null
+  pending: number | null
+}
+
+type TransportationDashboardRow = {
+  eid: string
+  employee_name: string
+  department: string | null
+  residential_address: string | null
+  band_serial: string | null
+  confirmed_answer: string | null
+  confirmation_status: string
+  confirmed_at: string | null
+  confirmed_by_staff_id: string | null
+}
+
+type TransportationDashboard = {
+  ok: boolean
+  generatedAt: string
+  counts: TransportationDashboardCounts
+  rows: TransportationDashboardRow[]
+}
 function canManageRegistration(staff: Staff | null) {
   return staff?.role === 'admin' || staff?.role === 'registration'
 }
@@ -111,7 +204,7 @@ function App() {
   const [activePage, setActivePage] = useState('home')
   const [emergencyQuery, setEmergencyQuery] = useState('')
   const [emergencyMode, setEmergencyMode] = useState<'eid' | 'serial'>('eid')
-  const [emergencyResults, setEmergencyResults] = useState<any[]>([])
+  const [emergencyResults, setEmergencyResults] = useState<EmergencyLookupAttendee[]>([])
   const [emergencyError, setEmergencyError] = useState('')
   const [emergencyBusy, setEmergencyBusy] = useState(false)
   const [emergencyScannerRunning, setEmergencyScannerRunning] = useState(false)
@@ -213,25 +306,16 @@ function App() {
       setEmergencyError(error instanceof Error ? error.message : 'Camera could not start. Check camera permissions.')
     }
   }
-  const [operationsDashboard, setOperationsDashboard] = useState<any>(null)
+  const [operationsDashboard, setOperationsDashboard] = useState<OperationsDashboard | null>(null)
   const [operationsDashboardError, setOperationsDashboardError] = useState('')
   const [operationsDashboardBusy, setOperationsDashboardBusy] = useState(false)
   const [operationsDashboardSearch, setOperationsDashboardSearch] = useState('')
-  const [transportationDashboard, setTransportationDashboard] = useState<any>(null)
+  const [transportationDashboard, setTransportationDashboard] = useState<TransportationDashboard | null>(null)
   const [transportationDashboardError, setTransportationDashboardError] = useState('')
   const [transportationDashboardBusy, setTransportationDashboardBusy] = useState(false)
   const [transportationDashboardSearch, setTransportationDashboardSearch] = useState('')
   const [transportationDashboardFilter, setTransportationDashboardFilter] = useState('ALL')
-  // operations dashboard auto-refresh
-  useEffect(() => {
-    if (signedInStaff?.role !== 'admin' || activePage !== 'operations') return
-    void loadOperationsDashboard()
-    const timer = window.setInterval(() => {
-      void loadOperationsDashboard()
-    }, 5000)
-    return () => window.clearInterval(timer)
-  }, [signedInStaff, activePage])
-  async function loadOperationsDashboard() {
+  const loadOperationsDashboard = useCallback(async () => {
     if (signedInStaff?.role !== 'admin') return
     setOperationsDashboardBusy(true)
     try {
@@ -245,7 +329,37 @@ function App() {
     } finally {
       setOperationsDashboardBusy(false)
     }
-  }
+  }, [signedInStaff])
+
+  const loadTransportationDashboard = useCallback(async () => {
+    if (signedInStaff?.role !== 'admin') return
+    setTransportationDashboardBusy(true)
+    try {
+      const response = await fetch('/api/admin/transportation-dashboard', { credentials: 'same-origin' })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'Could not load transportation dashboard')
+      setTransportationDashboard(data)
+      setTransportationDashboardError('')
+    } catch (error) {
+      setTransportationDashboardError(error instanceof Error ? error.message : 'Could not load transportation dashboard')
+    } finally {
+      setTransportationDashboardBusy(false)
+    }
+  }, [signedInStaff])
+
+  // operations dashboard auto-refresh
+  useEffect(() => {
+    if (signedInStaff?.role !== 'admin' || activePage !== 'operations') return
+    const initialLoad = window.setTimeout(() => void loadOperationsDashboard(), 0)
+    const timer = window.setInterval(() => {
+      void loadOperationsDashboard()
+    }, 5000)
+    return () => {
+      window.clearTimeout(initialLoad)
+      window.clearInterval(timer)
+    }
+  }, [signedInStaff, activePage, loadOperationsDashboard])
+
   function downloadOperationsCsv() {
     if (!operationsDashboard) return
     const columns = ['Record Type', 'Action', 'Attendee', 'Enterprise ID', 'Band Serial', 'Method', 'Staff ID', 'Timestamp']
@@ -269,26 +383,15 @@ function App() {
   }
   useEffect(() => {
     if (signedInStaff?.role !== 'admin' || activePage !== 'transportation') return
-    void loadTransportationDashboard()
+    const initialLoad = window.setTimeout(() => void loadTransportationDashboard(), 0)
     const timer = window.setInterval(() => void loadTransportationDashboard(), 10000)
-    return () => window.clearInterval(timer)
-  }, [signedInStaff, activePage])
-
-  async function loadTransportationDashboard() {
-    if (signedInStaff?.role !== 'admin') return
-    setTransportationDashboardBusy(true)
-    try {
-      const response = await fetch('/api/admin/transportation-dashboard', { credentials: 'same-origin' })
-      const data = await response.json()
-      if (!response.ok) throw new Error(data.error || 'Could not load transportation dashboard')
-      setTransportationDashboard(data)
-      setTransportationDashboardError('')
-    } catch (error) {
-      setTransportationDashboardError(error instanceof Error ? error.message : 'Could not load transportation dashboard')
-    } finally {
-      setTransportationDashboardBusy(false)
+    return () => {
+      window.clearTimeout(initialLoad)
+      window.clearInterval(timer)
     }
-  }
+  }, [signedInStaff, activePage, loadTransportationDashboard])
+
+
 
   function downloadTransportationCsv() {
     if (!transportationDashboard) return
@@ -2029,7 +2132,7 @@ function App() {
                 {signedInStaff.role === 'admin' && <>
                   <p className="cc-sidebar-label cc-sidebar-label-spaced">ADMINISTRATION</p>
                   <button type="button" className="cc-sidebar-link" onClick={() => setActivePage('operations')}><span>OPS</span> Operations</button>
-                  <button type="button" className="cc-sidebar-link" onClick={() => { setTransportationDashboardSearch(''); setTransportationDashboardFilter('ALL'); setActivePage('transportation') }}><span>Transport</span> Transportation Dashboard</button>
+                  <button type="button" className="cc-sidebar-link" onClick={() => { setTransportationDashboardSearch(''); setTransportationDashboardFilter('ALL'); setActivePage('transportation') }}><span>TRN</span> Transportation Dashboard</button>
                   <button type="button" className="cc-sidebar-link" onClick={() => { setActivePage('mypmo'); setMypmoUploadMessage(''); setMypmoUploadError(''); setMypmoLookupMessage(''); setMypmoLookupError(''); setMypmoEmployee(null) }}><span>MP</span> MyPMO</button>
                   <button type="button" className="cc-sidebar-link" onClick={() => setActivePage('employee-prereg')}><span>PRE</span> Pre-registration</button>
                 </>}
@@ -2167,7 +2270,7 @@ function App() {
                 {emergencyBusy && <p role="status">Looking up attendee...</p>}
               </div>
 
-              {emergencyResults.map((attendee: any) => (
+              {emergencyResults.map((attendee) => (
                 <article className="cc-inventory-panel" key={attendee.eid} style={{marginTop:'16px'}}>
                   <h2>{attendee.name}</h2>
                   <p><strong>Employee ID:</strong> {attendee.eid || 'Not available'}</p>
@@ -2400,7 +2503,7 @@ function App() {
               </tr>
             </thead>
             <tbody>
-              {(operationsDashboard.transportation || []).map((item:any,index:number) => (
+              {(operationsDashboard.transportation || []).map((item,index) => (
                 <tr key={`${item.eid}-${index}`}>
                   <td>{item.eid}</td>
                   <td>{item.employee_name}</td>
@@ -2423,7 +2526,7 @@ function App() {
           <table style={{width:'100%',borderCollapse:'collapse',textAlign:'left'}}>
             <thead><tr><th>Action</th><th>Attendee</th><th>EID</th><th>Band serial</th><th>Staff ID</th><th>Timestamp</th></tr></thead>
             <tbody>
-              {(operationsDashboard.assignments || []).filter((item:any) => [item.action,item.attendee_name,item.eid,item.serial,item.staff_id,item.performed_at].some(value => String(value ?? '').toLowerCase().includes(operationsDashboardSearch.toLowerCase()))).map((item:any,index:number) => (
+              {(operationsDashboard.assignments || []).filter((item) => [item.action,item.attendee_name,item.eid,item.serial,item.staff_id,item.performed_at].some(value => String(value ?? '').toLowerCase().includes(operationsDashboardSearch.toLowerCase()))).map((item,index) => (
                 <tr key={`${item.serial}-${item.performed_at}-${index}`}>
                   <td>{item.action}</td><td>{item.attendee_name || '—'}</td><td>{item.eid || '—'}</td><td>{item.serial}</td><td>{item.staff_id || '—'}</td><td>{formatIndiaDateTime(item.performed_at)}</td>
                 </tr>
@@ -2436,7 +2539,7 @@ function App() {
           <table style={{width:'100%',borderCollapse:'collapse',textAlign:'left'}}>
             <thead><tr><th>Attendee</th><th>EID</th><th>Band serial</th><th>Method</th><th>Staff ID</th><th>Timestamp</th></tr></thead>
             <tbody>
-              {(operationsDashboard.checkins || []).filter((item:any) => [item.attendee_name,item.eid,item.serial,item.method,item.staff_id,item.checked_in_at].some(value => String(value ?? '').toLowerCase().includes(operationsDashboardSearch.toLowerCase()))).map((item:any,index:number) => (
+              {(operationsDashboard.checkins || []).filter((item) => [item.attendee_name,item.eid,item.serial,item.method,item.staff_id,item.checked_in_at].some(value => String(value ?? '').toLowerCase().includes(operationsDashboardSearch.toLowerCase()))).map((item,index) => (
                 <tr key={`${item.eid}-${item.checked_in_at}-${index}`}>
                   <td>{item.attendee_name || '—'}</td><td>{item.eid}</td><td>{item.serial || '—'}</td><td>{item.method}</td><td>{item.staff_id || '—'}</td><td>{formatIndiaDateTime(item.checked_in_at)}</td>
                 </tr>
@@ -2449,7 +2552,7 @@ function App() {
           <table style={{width:'100%',borderCollapse:'collapse',textAlign:'left'}}>
             <thead><tr><th>Attendee</th><th>EID</th><th>Band serial</th><th>Assigned at</th></tr></thead>
             <tbody>
-              {(operationsDashboard.awaitingCheckin || []).filter((item:any) => [item.attendee_name,item.eid,item.serial,item.assigned_at].some(value => String(value ?? '').toLowerCase().includes(operationsDashboardSearch.toLowerCase()))).map((item:any,index:number) => (
+              {(operationsDashboard.awaitingCheckin || []).filter((item) => [item.attendee_name,item.eid,item.serial,item.assigned_at].some(value => String(value ?? '').toLowerCase().includes(operationsDashboardSearch.toLowerCase()))).map((item,index) => (
                 <tr key={`${item.serial}-${index}`}>
                   <td>{item.attendee_name || '—'}</td><td>{item.eid}</td><td>{item.serial}</td><td>{formatIndiaDateTime(item.assigned_at)}</td>
                 </tr>
@@ -2513,9 +2616,9 @@ function App() {
                         </thead>
                         <tbody>
                           {(transportationDashboard.rows || [])
-                            .filter((item:any) => transportationDashboardFilter === 'ALL' || item.confirmation_status === transportationDashboardFilter)
-                            .filter((item:any) => [item.eid,item.employee_name,item.department,item.residential_address,item.band_serial,item.confirmation_status,item.confirmed_answer,item.confirmed_by_staff_id].some(value => String(value ?? '').toLowerCase().includes(transportationDashboardSearch.toLowerCase())))
-                            .map((item:any,index:number) => (
+                            .filter((item) => transportationDashboardFilter === 'ALL' || item.confirmation_status === transportationDashboardFilter)
+                            .filter((item) => [item.eid,item.employee_name,item.department,item.residential_address,item.band_serial,item.confirmation_status,item.confirmed_answer,item.confirmed_by_staff_id].some(value => String(value ?? '').toLowerCase().includes(transportationDashboardSearch.toLowerCase())))
+                            .map((item,index) => (
                               <tr key={`${item.eid}-${index}`}>
                                 <td>{item.eid || '-'}</td>
                                 <td>{item.employee_name || '-'}</td>
@@ -2528,13 +2631,13 @@ function App() {
                                 <td>{item.confirmed_by_staff_id || '-'}</td>
                               </tr>
                             ))}
-                          {!(transportationDashboard.rows || []).filter((item:any) => transportationDashboardFilter === 'ALL' || item.confirmation_status === transportationDashboardFilter).filter((item:any) => [item.eid,item.employee_name,item.department,item.residential_address,item.band_serial,item.confirmation_status,item.confirmed_answer,item.confirmed_by_staff_id].some(value => String(value ?? '').toLowerCase().includes(transportationDashboardSearch.toLowerCase()))).length && (
+                          {!(transportationDashboard.rows || []).filter((item) => transportationDashboardFilter === 'ALL' || item.confirmation_status === transportationDashboardFilter).filter((item) => [item.eid,item.employee_name,item.department,item.residential_address,item.band_serial,item.confirmation_status,item.confirmed_answer,item.confirmed_by_staff_id].some(value => String(value ?? '').toLowerCase().includes(transportationDashboardSearch.toLowerCase()))).length && (
                             <tr><td colSpan={9}>No matching transportation records found.</td></tr>
                           )}
                         </tbody>
                       </table>
                     </div>
-                    <p style={{marginTop:'14px'}}>Showing {(transportationDashboard.rows || []).filter((item:any) => transportationDashboardFilter === 'ALL' || item.confirmation_status === transportationDashboardFilter).filter((item:any) => [item.eid,item.employee_name,item.department,item.residential_address,item.band_serial,item.confirmation_status,item.confirmed_answer,item.confirmed_by_staff_id].some(value => String(value ?? '').toLowerCase().includes(transportationDashboardSearch.toLowerCase()))).length} of {(transportationDashboard.rows || []).length} opted-in employees.</p>
+                    <p style={{marginTop:'14px'}}>Showing {(transportationDashboard.rows || []).filter((item) => transportationDashboardFilter === 'ALL' || item.confirmation_status === transportationDashboardFilter).filter((item) => [item.eid,item.employee_name,item.department,item.residential_address,item.band_serial,item.confirmation_status,item.confirmed_answer,item.confirmed_by_staff_id].some(value => String(value ?? '').toLowerCase().includes(transportationDashboardSearch.toLowerCase()))).length} of {(transportationDashboard.rows || []).length} opted-in employees.</p>
                   </div>
                 </>
               )}
@@ -2599,10 +2702,10 @@ function App() {
                                 <button className="dashboard-signout" type="button" disabled={inventoryBusy||!inventoryEid.trim()} onClick={()=>void lookupInventoryAttendee()}>Find employee</button>
                 {inventoryLookupAttendee && <p className="login-description">Employee: <strong>{inventoryLookupAttendee.name}</strong> | EID: {inventoryLookupAttendee.eid} | Department: {inventoryLookupAttendee.department || '-'}</p>}
                 {pendingInventoryTransportation && (
-                  <section className="cc-checkin-panel" role="group" aria-labelledby="cc-inventory-transport-question">
+                  <section className="cc-checkin-panel cc-inventory-transport-confirmation" role="group" aria-labelledby="cc-inventory-transport-question">
                     <h2 id="cc-inventory-transport-question">Transportation confirmation</h2>
                     <p>{pendingInventoryTransportation.attendee.name} already opted for transportation during pre-registration. Will they be availing the drop facility today?</p>
-                    <div className="cc-checkin-actions">
+                    <div className="cc-checkin-actions cc-inventory-transport-actions">
                       <button className="attendee-save-button" type="button" disabled={inventoryBusy} aria-pressed={inventoryTransportAnswer === 'YES'} onClick={() => setInventoryTransportAnswer('YES')}>Yes, availing the drop</button>
                       <button className="attendee-cancel-button" type="button" disabled={inventoryBusy} aria-pressed={inventoryTransportAnswer === 'NO'} onClick={() => setInventoryTransportAnswer('NO')}>No, not availing</button>
                     </div>
