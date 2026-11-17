@@ -17,9 +17,15 @@ type EmergencyLookupRow = {
   eid: string
   name: string
   contact_number: string | null
+  family_emergency_contact_name: string | null
+  family_emergency_contact_relation: string | null
   family_emergency_contact_number: string | null
+  colleague_enterprise_id: string | null
+  colleague_name: string | null
   colleague_emergency_contact_number: string | null
   project: string | null
+  mapped_project: string | null
+  mapped_lead: string | null
   status: AttendeeStatus
 }
 
@@ -99,6 +105,10 @@ function randomToken() { const bytes = new Uint8Array(32); crypto.getRandomValue
 
 function canRegister(staff: Staff) {
   return staff.role === 'admin' || staff.role === 'registration'
+}
+
+function canViewAttendees(staff: Staff) {
+  return ['admin', 'registration', 'inventory', 'checkin'].includes(staff.role)
 }
 
 function canManageInventory(staff: Staff) {
@@ -316,7 +326,7 @@ export default {
     }
     const apiPath = url.pathname
 
-    if (!['/api/attendees', '/api/emergency-lookup', '/api/wristbands', '/api/checkin', '/api/checkins', '/api/inventory', '/api/inventory/generate', '/api/inventory/assign', '/api/inventory/attendee-lookup', '/api/inventory/available', '/api/registration/approve', '/api/registration/reject', '/api/inventory/checkin', '/api/admin/operations-dashboard', '/api/admin/transportation-dashboard', '/api/admin/employee-prereg/import', '/api/mypmo/upload', '/api/mypmo/lookup'].includes(apiPath)) return json({ error: 'Not found' }, 404)
+    if (!['/api/attendees', '/api/emergency-lookup', '/api/wristbands', '/api/checkin', '/api/checkins', '/api/inventory', '/api/inventory/generate', '/api/inventory/assign', '/api/inventory/attendee-lookup', '/api/inventory/available', '/api/registration/approve', '/api/registration/reject', '/api/inventory/checkin', '/api/admin/operations-dashboard', '/api/admin/transportation-dashboard', '/api/admin/employee-prereg/import', '/api/admin/employee-project-leads', '/api/admin/employee-project-leads/import', '/api/mypmo/upload', '/api/mypmo/lookup'].includes(apiPath)) return json({ error: 'Not found' }, 404)
 
     let staff: Staff | null
 
@@ -326,7 +336,7 @@ export default {
 
     if (apiPath === '/api/wristbands') return json({error:'Legacy QR wristbands are disabled. Use preprinted inventory bands.'},410)
 
-    // OPTION 2 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â separate inventory-first wristbands. Legacy /api/wristbands remains unchanged.
+    // OPTION 2 ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â separate inventory-first wristbands. Legacy /api/wristbands remains unchanged.
 
     if (apiPath === '/api/admin/transportation-dashboard' && request.method === 'GET') {
       if (staff.role !== 'admin') {
@@ -1131,6 +1141,119 @@ export default {
       }
     }
     // MYPMO_ROUTES_END
+    // Independent Employee Project and Lead mappings
+    if (apiPath === '/api/admin/employee-project-leads') {
+      if (staff.role !== 'admin') {
+        return json({ error: 'Administrator access required' }, 403)
+      }
+      if (request.method !== 'GET') return json({ error: 'Method not allowed' }, 405)
+
+      try {
+        const search = (url.searchParams.get('q') || '').trim()
+        const project = (url.searchParams.get('project') || '').trim()
+        const lead = (url.searchParams.get('lead') || '').trim()
+
+        const conditions: string[] = []
+        const values: string[] = []
+
+        if (search) {
+          conditions.push('(enterprise_id LIKE ? OR project LIKE ? OR lead LIKE ?)')
+          const term = `%${search}%`
+          values.push(term, term, term)
+        }
+        if (project) {
+          conditions.push('LOWER(project) = LOWER(?)')
+          values.push(project)
+        }
+        if (lead) {
+          conditions.push('LOWER(lead) = LOWER(?)')
+          values.push(lead)
+        }
+
+        const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+        const result = await env.DB.prepare(`
+          SELECT enterprise_id, project, lead, created_at, updated_at
+          FROM employee_project_leads
+          ${where}
+          ORDER BY enterprise_id COLLATE NOCASE
+          LIMIT 10000
+        `).bind(...values).all()
+
+        const count = await env.DB.prepare(`
+          SELECT COUNT(*) AS total FROM employee_project_leads ${where}
+        `).bind(...values).first<{ total: number }>()
+
+        return json({ ok: true, rows: result.results || [], total: count?.total || 0 })
+      } catch (error) {
+        console.error('Employee Project and Lead dashboard load failed:', error)
+        return json({ error: 'Could not load Project and Lead mappings.' }, 500)
+      }
+    }
+
+    if (apiPath === '/api/admin/employee-project-leads/import') {
+      if (staff.role !== 'admin') {
+        return json({ error: 'Administrator access required' }, 403)
+      }
+      if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405)
+
+      try {
+        const payload = await readJson(request)
+        if (!isObject(payload) || !Array.isArray(payload.rows)) {
+          return json({ error: 'Provide an array of mapping rows.' }, 400)
+        }
+        if (payload.rows.length === 0 || payload.rows.length > 5000) {
+          return json({ error: 'Upload between 1 and 5000 rows per import.' }, 400)
+        }
+
+        let inserted = 0
+        let updated = 0
+        let skipped = 0
+
+        for (const item of payload.rows) {
+          if (!isObject(item)) {
+            skipped++
+            continue
+          }
+
+          const enterpriseId = String(item.enterpriseId ?? '').trim()
+          const project = String(item.project ?? '').trim()
+          const lead = String(item.lead ?? '').trim()
+
+          if (!enterpriseId || !project || !lead ||
+              enterpriseId.length > 150 || project.length > 150 || lead.length > 150) {
+            skipped++
+            continue
+          }
+
+          const existing = await env.DB.prepare(
+            'SELECT enterprise_id FROM employee_project_leads WHERE enterprise_id = ?'
+          ).bind(enterpriseId).first<{ enterprise_id: string }>()
+
+          await env.DB.prepare(`
+            INSERT INTO employee_project_leads (enterprise_id, project, lead)
+            VALUES (?, ?, ?)
+            ON CONFLICT(enterprise_id) DO UPDATE SET
+              project = excluded.project,
+              lead = excluded.lead,
+              updated_at = CURRENT_TIMESTAMP
+          `).bind(enterpriseId, project, lead).run()
+
+          if (existing) updated++
+          else inserted++
+        }
+
+        return json({
+          ok: true,
+          inserted,
+          updated,
+          skipped,
+          message: `Import complete: ${inserted} inserted, ${updated} updated, ${skipped} skipped.`
+        })
+      } catch (error) {
+        console.error('Employee Project and Lead import failed:', error)
+        return json({ error: 'Import failed. No production database was changed.' }, 500)
+      }
+    }
     if (apiPath === '/api/emergency-lookup' && request.method === 'GET') {
 
       const query = (url.searchParams.get('q') || '').trim()
@@ -1151,8 +1274,15 @@ export default {
           SELECT a.eid, a.name, a.contact_number,
                  a.family_emergency_contact_number,
                  a.colleague_emergency_contact_number,
-                 a.project, a.status
+                 a.family_emergency_contact_name,
+                 a.family_emergency_contact_relation,
+                 a.colleague_enterprise_id,
+                 a.project, a.status,
+                 epl.project AS mapped_project,
+                 epl.lead AS mapped_lead
           FROM attendees a
+          LEFT JOIN employee_project_leads epl
+            ON LOWER(TRIM(epl.enterprise_id)) = LOWER(TRIM(a.eid))
         `
         let attendee: EmergencyLookupRow | null = null
         let results: EmergencyLookupRow[] = []
@@ -1213,20 +1343,26 @@ export default {
     }
     if (apiPath === '/api/attendees' && request.method === 'GET') {
 
-      if (!canRegister(staff)) return json({ error: 'You do not have permission to view attendee records' }, 403)
+      if (!canViewAttendees(staff)) return json({ error: 'You do not have permission to view attendee records' }, 403)
 
       try {
         const result = await env.DB.prepare(`
-          SELECT a.eid, a.name, a.email, a.department, a.contact_number,
-                 a.family_emergency_contact_number, a.colleague_emergency_contact_number,
-                 a.project, a.project_lead, a.status, a.created_at,
+          SELECT a.eid, a.name,
+                 CASE WHEN ? = 1 THEN a.email ELSE '' END AS email,
+                 a.department,
+                 CASE WHEN ? = 1 THEN a.contact_number ELSE NULL END AS contact_number,
+                 CASE WHEN ? = 1 THEN a.family_emergency_contact_number ELSE NULL END AS family_emergency_contact_number,
+                 CASE WHEN ? = 1 THEN a.colleague_emergency_contact_number ELSE NULL END AS colleague_emergency_contact_number,
+                 a.project,
+                 CASE WHEN ? = 1 THEN a.project_lead ELSE NULL END AS project_lead,
+                 a.status, a.created_at,
                  CASE WHEN EXISTS (
                    SELECT 1 FROM mypmo_resources_v2 m
                    WHERE LOWER(TRIM(m.enterprise_id)) = LOWER(TRIM(a.eid))
                  ) THEN 1 ELSE 0 END AS mypmo_available
           FROM attendees a
           ORDER BY a.created_at DESC, a.name ASC
-        `).all<Attendee>()
+        `).bind(...Array(5).fill(canRegister(staff) ? 1 : 0)).all<Attendee>()
         return json({ ok: true, attendees: result.results })
       }
 
@@ -1488,3 +1624,8 @@ export default {
   },
 
 } satisfies ExportedHandler<Env>
+
+
+
+
+

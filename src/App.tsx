@@ -52,12 +52,18 @@ type Attendee = {
 }
 
 type EmergencyLookupAttendee = {
+  family_emergency_contact_name: string | null
+  family_emergency_contact_relation: string | null
+  colleague_enterprise_id: string | null
+  colleague_name: string | null
   eid: string
   name: string
   contact_number: string | null
   family_emergency_contact_number: string | null
   colleague_emergency_contact_number: string | null
   project: string | null
+  mapped_project: string | null
+  mapped_lead: string | null
   status: string
 }
 
@@ -147,6 +153,9 @@ type TransportationDashboard = {
 function canManageRegistration(staff: Staff | null) {
   return staff?.role === 'admin' || staff?.role === 'registration'
 }
+function canViewAttendees(staff: Staff | null) {
+  return staff !== null && ['admin', 'registration', 'inventory', 'checkin'].includes(staff.role)
+}
 
 function canManageInventory(staff: Staff | null) {
   return staff?.role === 'admin' || staff?.role === 'inventory'
@@ -175,7 +184,7 @@ type CheckinResult = { ok?: boolean; error?: string; attendee?: { eid: string; n
 const initialDemoAttendees: Attendee[] = []
 
 function formatIndiaDateTime(value: string | null | undefined): string {
-  if (!value) return '—'
+  if (!value) return 'â€”'
   const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(value)
     ? `${value.replace(' ', 'T')}Z`
     : value
@@ -415,6 +424,163 @@ function App() {
     URL.revokeObjectURL(url)
   }
 
+  type EmployeeProjectLeadRow = {
+    enterprise_id: string
+    project: string
+    lead: string
+    created_at?: string
+    updated_at?: string
+  }
+  type EmployeeProjectLeadPreviewRow = {
+    enterpriseId: string
+    project: string
+    lead: string
+    issue: string
+  }
+  const [employeeProjectLeadRows, setEmployeeProjectLeadRows] = useState<EmployeeProjectLeadRow[]>([])
+  const [employeeProjectLeadBusy, setEmployeeProjectLeadBusy] = useState(false)
+  const [employeeProjectLeadError, setEmployeeProjectLeadError] = useState('')
+  const [employeeProjectLeadMessage, setEmployeeProjectLeadMessage] = useState('')
+  const [employeeProjectLeadSearch, setEmployeeProjectLeadSearch] = useState('')
+  const [employeeProjectLeadProjectFilter, setEmployeeProjectLeadProjectFilter] = useState('ALL')
+  const [employeeProjectLeadLeadFilter, setEmployeeProjectLeadLeadFilter] = useState('ALL')
+  const [employeeProjectLeadFile, setEmployeeProjectLeadFile] = useState<File | null>(null)
+  const [employeeProjectLeadPreview, setEmployeeProjectLeadPreview] = useState<EmployeeProjectLeadPreviewRow[]>([])
+  const [employeeProjectLeadImportBusy, setEmployeeProjectLeadImportBusy] = useState(false)
+
+  async function loadEmployeeProjectLeads() {
+    setEmployeeProjectLeadBusy(true)
+    setEmployeeProjectLeadError('')
+    try {
+      const response = await fetch('/api/admin/employee-project-leads', { credentials: 'same-origin' })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'Could not load Project and Lead mappings.')
+      setEmployeeProjectLeadRows(Array.isArray(data.rows) ? data.rows : [])
+    } catch (error) {
+      setEmployeeProjectLeadError(error instanceof Error ? error.message : 'Could not load mappings.')
+    } finally {
+      setEmployeeProjectLeadBusy(false)
+    }
+  }
+
+  async function previewEmployeeProjectLeadFile(file: File | null) {
+    setEmployeeProjectLeadFile(file)
+    setEmployeeProjectLeadPreview([])
+    setEmployeeProjectLeadMessage('')
+    setEmployeeProjectLeadError('')
+    if (!file) return
+
+    try {
+      const bytes = await file.arrayBuffer()
+      const workbook = XLSX.read(bytes, { type: 'array', cellDates: false })
+      const sheet = workbook.Sheets[workbook.SheetNames[0]]
+      if (!sheet) throw new Error('The workbook has no readable worksheet.')
+
+      const rawRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+        defval: '',
+        raw: false,
+      })
+      if (!rawRows.length) throw new Error('No employee mapping rows were found.')
+      if (rawRows.length > 5000) throw new Error('Maximum supported upload size is 5,000 rows.')
+
+      const normalizeHeader = (value: string) => value.toLowerCase().replace(/[^a-z]/g, '')
+      const first = rawRows[0]
+      const headers = Object.keys(first)
+      const eidHeader = headers.find(key => normalizeHeader(key) === 'enterpriseid')
+      const projectHeader = headers.find(key => normalizeHeader(key) === 'project')
+      const leadHeader = headers.find(key => normalizeHeader(key) === 'lead')
+
+      if (!eidHeader || !projectHeader || !leadHeader) {
+        throw new Error('Required columns: Enterprise id, Project, lead.')
+      }
+
+      const seen = new Set<string>()
+      const preview = rawRows.map(record => {
+        const enterpriseId = String(record[eidHeader] ?? '').trim()
+        const project = String(record[projectHeader] ?? '').trim()
+        const lead = String(record[leadHeader] ?? '').trim()
+        const key = enterpriseId.toLowerCase()
+        let issue = ''
+
+        if (!enterpriseId || !project || !lead) issue = 'Missing Enterprise ID, Project or Lead'
+        else if (enterpriseId.length > 150 || project.length > 150 || lead.length > 150) issue = 'A field exceeds 150 characters'
+        else if (seen.has(key)) issue = 'Duplicate Enterprise ID in this file'
+        if (key) seen.add(key)
+
+        return { enterpriseId, project, lead, issue }
+      })
+
+      setEmployeeProjectLeadPreview(preview)
+      setEmployeeProjectLeadMessage(
+        `Preview ready: ${preview.filter(row => !row.issue).length} valid rows, ${preview.filter(row => row.issue).length} rows needing attention.`,
+      )
+    } catch (error) {
+      setEmployeeProjectLeadError(error instanceof Error ? error.message : 'Could not read this workbook.')
+    }
+  }
+
+  async function importEmployeeProjectLeads() {
+    const validRows = employeeProjectLeadPreview.filter(row => !row.issue)
+    if (!validRows.length) {
+      setEmployeeProjectLeadError('There are no valid rows to import.')
+      return
+    }
+
+    setEmployeeProjectLeadImportBusy(true)
+    setEmployeeProjectLeadError('')
+    setEmployeeProjectLeadMessage('')
+    try {
+      const response = await fetch('/api/admin/employee-project-leads/import', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          rows: validRows.map(row => ({
+            enterpriseId: row.enterpriseId,
+            project: row.project,
+            lead: row.lead,
+          })),
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'Import failed.')
+      setEmployeeProjectLeadMessage(data.message || 'Import completed.')
+      setEmployeeProjectLeadFile(null)
+      setEmployeeProjectLeadPreview([])
+      await loadEmployeeProjectLeads()
+    } catch (error) {
+      setEmployeeProjectLeadError(error instanceof Error ? error.message : 'Import failed.')
+    } finally {
+      setEmployeeProjectLeadImportBusy(false)
+    }
+  }
+
+  const filteredEmployeeProjectLeadRows = employeeProjectLeadRows.filter(row =>
+    (employeeProjectLeadProjectFilter === 'ALL' || row.project === employeeProjectLeadProjectFilter) &&
+    (employeeProjectLeadLeadFilter === 'ALL' || row.lead === employeeProjectLeadLeadFilter) &&
+    [row.enterprise_id, row.project, row.lead].some(value =>
+      String(value ?? '').toLowerCase().includes(employeeProjectLeadSearch.toLowerCase().trim())
+    )
+  )
+
+  function downloadEmployeeProjectLeadCsv() {
+    const rows: unknown[][] = [
+      ['Enterprise id', 'Project', 'lead'],
+      ...filteredEmployeeProjectLeadRows.map(row => [row.enterprise_id, row.project, row.lead]),
+    ]
+    const csv = rows.map(row => row.map(value =>
+      `"${String(value ?? '').replace(/\r?\n/g, ' ').replace(/"/g, '""')}"`
+    ).join(',')).join('\r\n')
+    const blob = new Blob(['\uFEFF', csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `employee-project-lead-mappings-${new Date().toISOString().slice(0, 10)}.csv`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+  }
   const [mypmoRosterType, setMypmoRosterType] = useState<'ASPIRE' | 'IX'>('ASPIRE')
   const [employeeImportRosterType, setEmployeeImportRosterType] = useState<'ASPIRE' | 'IX'>('ASPIRE')
   const [mypmoFile, setMypmoFile] = useState<File | null>(null)
@@ -432,11 +598,11 @@ function App() {
     email: string
     department: string
     contact_number: string
-    family_emergency_contact_number: string
     family_emergency_contact_name: string
     family_emergency_contact_relation: string
-    colleague_emergency_contact_number: string
+    family_emergency_contact_number: string
     colleague_enterprise_id: string
+    colleague_emergency_contact_number: string
     residential_address: string
     residence_drop_required: string
     project: string
@@ -478,11 +644,11 @@ function App() {
               department: row.department,
               project: row.project,
               contact_number: row.contact_number,
-              family_emergency_contact_number: row.family_emergency_contact_number,
               family_emergency_contact_name: row.family_emergency_contact_name,
               family_emergency_contact_relation: row.family_emergency_contact_relation,
-              colleague_emergency_contact_number: row.colleague_emergency_contact_number,
+              family_emergency_contact_number: row.family_emergency_contact_number,
               colleague_enterprise_id: row.colleague_enterprise_id,
+              colleague_emergency_contact_number: row.colleague_emergency_contact_number,
               residential_address: row.residential_address,
               residence_drop_required: row.residence_drop_required,
               project_lead: row.project_lead,
@@ -577,7 +743,9 @@ function App() {
             for (const name of names) {
               const value = headers.get(name)
               if (value !== undefined && String(value).trim() !== '') {
-                return String(value).trim()
+                return typeof value === 'number' && Number.isFinite(value)
+                  ? value.toFixed(0)
+                  : String(value).trim()
               }
             }
             return ''
@@ -588,11 +756,11 @@ function App() {
           const eid = emailMatch ? emailMatch[1].toLowerCase() :
             pick(['eid', 'employeeid', 'employeeenterpriseid']).toLowerCase()
           const name = pick(['name', 'fullname', 'employeename', 'respondentname'])
-          const familyName = pick(['name2', 'familyemergencycontactname', 'emergencycontactname'])
+          const familyName = pick(['name1', 'familyemergencycontactname', 'emergencycontactname'])
           const familyRelation = pick(['relationship', 'familyemergencycontactrelation', 'emergencycontactrelation'])
           const familyEmergency = pick(['contactnumber', 'emergencycontactnumber'])
-          const colleagueContact = pick(['contactnumber2', 'colleaguecontactnumber', 'colleagueemergencycontactnumber'])
-          const colleagueEid = pick(['enterpriseid', 'colleagueenterpriseid'])
+          const colleagueContact = pick(['contactnumber1', 'colleaguecontactnumber', 'colleagueemergencycontactnumber'])
+          const colleagueEid = pick(['colleaugeenterpriseid', 'colleagueenterpriseid', 'enterpriseid'])
           const residentialAddress = pick(['pleaseprovideyourresidentialaddress', 'residentialaddress', 'address'])
           const residenceDropRequired = pick(['wouldyouliketoavailadroptoyourresidencefromtheeventvenuejrcconventioncentreby1030pm', 'residencedroprequired', 'transportationopted'])
           const project = ''
@@ -620,11 +788,11 @@ function App() {
             email,
             department: project,
             contact_number: '',
-            family_emergency_contact_number: familyEmergency,
             family_emergency_contact_name: familyName,
             family_emergency_contact_relation: familyRelation,
-            colleague_emergency_contact_number: colleagueContact,
+            family_emergency_contact_number: familyEmergency,
             colleague_enterprise_id: colleagueEid,
+            colleague_emergency_contact_number: colleagueContact,
             residential_address: residentialAddress,
             residence_drop_required: residenceDropRequired,
             project,
@@ -799,9 +967,6 @@ function App() {
           family_emergency_contact_number: publicEmergencyContact.trim(),
           colleague_emergency_contact_number: publicColleagueContact.trim(),
           residential_address: publicResidentialAddress.trim(),
-          colleague_enterprise_id: publicColleagueEnterpriseId.trim(),
-          family_emergency_contact_name: publicFamilyContactName.trim(),
-          family_emergency_contact_relation: publicFamilyContactRelation.trim(),
         }),
       })
 
@@ -1085,9 +1250,6 @@ function App() {
           colleague_emergency_contact_number: colleagueContact,
           project_lead: peopleLead,
           residential_address: residentialAddress,
-          colleague_enterprise_id: colleagueEnterpriseId,
-          family_emergency_contact_name: familyContactName,
-          family_emergency_contact_relation: familyContactRelation,
           status: 'Registered',
         }),
 
@@ -1276,9 +1438,6 @@ function App() {
           colleague_emergency_contact_number: editColleagueEmergency.trim(),
           project_lead: editPeopleLead.trim(),
           residential_address: editResidentialAddress.trim(),
-          colleague_enterprise_id: editColleagueEnterpriseId.trim(),
-          family_emergency_contact_name: editFamilyContactName.trim(),
-          family_emergency_contact_relation: editFamilyContactRelation.trim(),
 
           status: editStatus,
 
@@ -2017,7 +2176,7 @@ function App() {
 
       setInventoryMessage(
         path.endsWith('/generate')
-          ? `Generated ${d.generated} bands (${d.prefix}${String(d.start).padStart(3,'0')}Ã¢â‚¬â€œ${d.prefix}${String(d.end).padStart(3,'0')}).`
+          ? `Generated ${d.generated} bands (${d.prefix}${String(d.start).padStart(3,'0')}ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“${d.prefix}${String(d.end).padStart(3,'0')}).`
           : path.endsWith('/assign')
             ? `${d.serial} assigned to ${d.attendee.name}. Transportation: ${d.transportationConfirmation || 'Not applicable'}.`
             : `${d.serial} checked in: ${d.attendee.name}.`
@@ -2126,6 +2285,7 @@ function App() {
                 <button type="button" className="cc-sidebar-link is-active" onClick={() => setActivePage('home')}><span>OV</span> Overview</button>
                 {canUseCheckin(signedInStaff) && <button type="button" className="cc-sidebar-link" onClick={() => { setActivePage('checkin'); setCheckinError(''); setCheckinMessage(''); setCheckedInAttendee(null) }}><span>QR</span> QR Check-in</button>}
                 {canManageRegistration(signedInStaff) && <button type="button" className="cc-sidebar-link" onClick={() => { setRegistrationFilter('All'); setSearchTerm(''); setActivePage('registration'); void loadAttendees() }}><span>ID</span> Attendees</button>}
+                {!canManageRegistration(signedInStaff) && canViewAttendees(signedInStaff) && <button type="button" className="cc-sidebar-link" onClick={() => { setRegistrationFilter('All'); setSearchTerm(''); setActivePage('attendees'); void loadAttendees() }}><span>ID</span> Attendee Directory</button>}
                 {canManageRegistration(signedInStaff) && <button type="button" className="cc-sidebar-link" onClick={() => { setRegistrationFilter('Pending'); setSearchTerm(''); setAttendeeMessage(''); setActivePage('registration'); void loadAttendees() }}><span>REG</span> Registrations</button>}
                 {canManageInventory(signedInStaff) && <button type="button" className="cc-sidebar-link" onClick={() => { setActivePage('inventory'); void loadInventory() }}><span>BND</span> Band Inventory</button>}
                 {canAccessEmergencyScanner(signedInStaff) && <button type="button" className="cc-sidebar-link" onClick={() => { setEmergencyQuery(''); setEmergencyResults([]); setEmergencyError(''); setActivePage('emergency') }}><span>!</span> Emergency Lookup</button>}
@@ -2135,6 +2295,7 @@ function App() {
                   <button type="button" className="cc-sidebar-link" onClick={() => { setTransportationDashboardSearch(''); setTransportationDashboardFilter('ALL'); setActivePage('transportation') }}><span>TRN</span> Transportation Dashboard</button>
                   <button type="button" className="cc-sidebar-link" onClick={() => { setActivePage('mypmo'); setMypmoUploadMessage(''); setMypmoUploadError(''); setMypmoLookupMessage(''); setMypmoLookupError(''); setMypmoEmployee(null) }}><span>MP</span> MyPMO</button>
                   <button type="button" className="cc-sidebar-link" onClick={() => setActivePage('employee-prereg')}><span>PRE</span> Pre-registration</button>
+                  <button type="button" className="cc-sidebar-link" onClick={() => { setActivePage('employee-project-leads'); void loadEmployeeProjectLeads() }}><span>PL</span> Leads &amp; Projects</button>
                 </>}
                 <div className="cc-sidebar-foot"><span className="cc-live-indicator" /> Event workspace active</div>
               </aside>
@@ -2162,6 +2323,7 @@ function App() {
                   </button>}
                   <div className="cc-action-grid">
                     {canManageRegistration(signedInStaff) && <button type="button" className="cc-action-tile" onClick={() => { setRegistrationFilter('All'); setSearchTerm(''); setActivePage('registration'); void loadAttendees() }}><span className="cc-tile-icon">ID</span><span><strong>Attendees</strong><small>Search records and update registrations</small></span><b>Open</b></button>}
+                    {!canManageRegistration(signedInStaff) && canViewAttendees(signedInStaff) && <button type="button" className="cc-action-tile" onClick={() => { setRegistrationFilter('All'); setSearchTerm(''); setActivePage('attendees'); void loadAttendees() }}><span className="cc-tile-icon">ID</span><span><strong>Attendee Directory</strong><small>View attendee list and registration status</small></span><b>Open</b></button>}
                     {canManageRegistration(signedInStaff) && <button type="button" className="cc-action-tile" onClick={() => { setRegistrationFilter('Pending'); setSearchTerm(''); setAttendeeMessage(''); setActivePage('registration'); void loadAttendees() }}><span className="cc-tile-icon">REG</span><span><strong>Employee Registration</strong><small>Review and approve QR submissions</small></span><b>Open</b></button>}
                     {canManageInventory(signedInStaff) && <button type="button" className="cc-action-tile" onClick={() => { setActivePage('inventory'); void loadInventory() }}><span className="cc-tile-icon">BND</span><span><strong>Band Inventory</strong><small>Assign preprinted wristbands</small></span><b>Open</b></button>}
                     {canAccessEmergencyScanner(signedInStaff) && <button type="button" className="cc-action-tile" onClick={() => { setEmergencyQuery(''); setEmergencyResults([]); setEmergencyError(''); setActivePage('emergency') }}><span className="cc-tile-icon">!</span><span><strong>Emergency Scanner</strong><small>Find attendee emergency contacts</small></span><b>Open</b></button>}
@@ -2169,9 +2331,10 @@ function App() {
                     {signedInStaff.role === 'admin' && <button type="button" className="cc-action-tile" onClick={() => { setTransportationDashboardSearch(''); setTransportationDashboardFilter('ALL'); setActivePage('transportation') }}><span className="cc-tile-icon">BUS</span><span><strong>Transportation Dashboard</strong><small>Track drop confirmations and pending employees</small></span><b>Open</b></button>}
                     {signedInStaff.role === 'admin' && <button type="button" className="cc-action-tile" onClick={() => { setActivePage('mypmo'); setMypmoUploadMessage(''); setMypmoUploadError(''); setMypmoLookupMessage(''); setMypmoLookupError(''); setMypmoEmployee(null) }}><span className="cc-tile-icon">MP</span><span><strong>MyPMO</strong><small>Import data and look up Enterprise IDs</small></span><b>Open</b></button>}
                     {signedInStaff.role === 'admin' && <button type="button" className="cc-action-tile" onClick={() => setActivePage('employee-prereg')}><span className="cc-tile-icon">PRE</span><span><strong>Employee Pre-Registration</strong><small>Validate Microsoft Forms responses</small></span><b>Open</b></button>}
+                    {signedInStaff.role === 'admin' && <button type="button" className="cc-action-tile" onClick={() => { setActivePage('employee-project-leads'); void loadEmployeeProjectLeads() }}><span className="cc-tile-icon">PL</span><span><strong>Leads &amp; Projects</strong><small>Import and search employee project mappings</small></span><b>Open</b></button>}
                   </div>
                 </section>
-                <footer className="cc-command-footer"><span><i /> All systems ready</span><span>Champion Celebration · Staff workspace</span></footer>
+                <footer className="cc-command-footer"><span><i /> All systems ready</span><span>Champion Celebration Â· Staff workspace</span></footer>
               </div>
             </section>
           )}
@@ -2275,15 +2438,21 @@ function App() {
                   <h2>{attendee.name}</h2>
                   <p><strong>Employee ID:</strong> {attendee.eid || 'Not available'}</p>
                   <p><strong>Project:</strong> {attendee.project || 'Not available'}</p>
+                  <p><strong>Mapped Project:</strong> {attendee.mapped_project || 'Not Available'}</p>
+                  <p><strong>Lead:</strong> {attendee.mapped_lead || 'Not Available'}</p>
                   <p><strong>Attendee contact:</strong> {attendee.contact_number || 'Not provided'}</p>
                   <div className="cc-inventory-fields">
                     <div>
                       <h3>Family emergency contact</h3>
-                      <p>{attendee.family_emergency_contact_number || 'Not provided'}</p>
+                      <p><strong>Name:</strong> {attendee.family_emergency_contact_name || 'Not provided'}</p>
+                      <p><strong>Relationship:</strong> {attendee.family_emergency_contact_relation || 'Not provided'}</p>
+                      <p><strong>Contact number:</strong> {attendee.family_emergency_contact_number || 'Not provided'}</p>
                     </div>
                     <div>
                       <h3>Colleague emergency contact</h3>
-                      <p>{attendee.colleague_emergency_contact_number || 'Not provided'}</p>
+
+                      <p><strong>Enterprise ID:</strong> {attendee.colleague_enterprise_id || 'Not provided'}</p>
+                      <p><strong>Contact number:</strong> {attendee.colleague_emergency_contact_number || 'Not provided'}</p>
                     </div>
                   </div>
                 </article>
@@ -2339,19 +2508,22 @@ function App() {
                         <thead>
                           <tr>
                             <th>Employee ID</th><th>Name</th><th>Email</th>
-                            <th>Project / Department</th><th>Emergency Contact</th>
-                            <th>Project Lead</th><th>Validation</th>
+                            <th>Family Contact Name</th><th>Relationship</th>
+                            <th>Family Contact Number</th><th>Colleague Enterprise ID</th>
+                            <th>Colleague Contact Number</th><th>Validation</th>
                           </tr>
                         </thead>
                         <tbody>
                           {employeeImportRows.map((row, index) => (
                             <tr key={`${row.eid}-${index}`}>
-                              <td>{row.eid || '—'}</td>
-                              <td>{row.name || '—'}</td>
-                              <td>{row.email || '—'}</td>
-                              <td>{row.project || '—'}</td>
-                              <td>{row.family_emergency_contact_number || '—'}</td>
-                              <td>{row.project_lead || '—'}</td>
+                              <td>{row.eid || '-'}</td>
+                              <td>{row.name || '-'}</td>
+                              <td>{row.email || '-'}</td>
+                              <td>{row.family_emergency_contact_name || 'Not provided'}</td>
+                              <td>{row.family_emergency_contact_relation || 'Not provided'}</td>
+                              <td>{row.family_emergency_contact_number || 'Not provided'}</td>
+                              <td>{row.colleague_enterprise_id || 'Not provided'}</td>
+                              <td>{row.colleague_emergency_contact_number || 'Not provided'}</td>
                               <td>{row.valid ? 'Valid' : row.issue}</td>
                             </tr>
                           ))}
@@ -2528,7 +2700,7 @@ function App() {
             <tbody>
               {(operationsDashboard.assignments || []).filter((item) => [item.action,item.attendee_name,item.eid,item.serial,item.staff_id,item.performed_at].some(value => String(value ?? '').toLowerCase().includes(operationsDashboardSearch.toLowerCase()))).map((item,index) => (
                 <tr key={`${item.serial}-${item.performed_at}-${index}`}>
-                  <td>{item.action}</td><td>{item.attendee_name || '—'}</td><td>{item.eid || '—'}</td><td>{item.serial}</td><td>{item.staff_id || '—'}</td><td>{formatIndiaDateTime(item.performed_at)}</td>
+                  <td>{item.action}</td><td>{item.attendee_name || 'â€”'}</td><td>{item.eid || 'â€”'}</td><td>{item.serial}</td><td>{item.staff_id || 'â€”'}</td><td>{formatIndiaDateTime(item.performed_at)}</td>
                 </tr>
               ))}
             </tbody>
@@ -2541,7 +2713,7 @@ function App() {
             <tbody>
               {(operationsDashboard.checkins || []).filter((item) => [item.attendee_name,item.eid,item.serial,item.method,item.staff_id,item.checked_in_at].some(value => String(value ?? '').toLowerCase().includes(operationsDashboardSearch.toLowerCase()))).map((item,index) => (
                 <tr key={`${item.eid}-${item.checked_in_at}-${index}`}>
-                  <td>{item.attendee_name || '—'}</td><td>{item.eid}</td><td>{item.serial || '—'}</td><td>{item.method}</td><td>{item.staff_id || '—'}</td><td>{formatIndiaDateTime(item.checked_in_at)}</td>
+                  <td>{item.attendee_name || 'â€”'}</td><td>{item.eid}</td><td>{item.serial || 'â€”'}</td><td>{item.method}</td><td>{item.staff_id || 'â€”'}</td><td>{formatIndiaDateTime(item.checked_in_at)}</td>
                 </tr>
               ))}
             </tbody>
@@ -2554,7 +2726,7 @@ function App() {
             <tbody>
               {(operationsDashboard.awaitingCheckin || []).filter((item) => [item.attendee_name,item.eid,item.serial,item.assigned_at].some(value => String(value ?? '').toLowerCase().includes(operationsDashboardSearch.toLowerCase()))).map((item,index) => (
                 <tr key={`${item.serial}-${index}`}>
-                  <td>{item.attendee_name || '—'}</td><td>{item.eid}</td><td>{item.serial}</td><td>{formatIndiaDateTime(item.assigned_at)}</td>
+                  <td>{item.attendee_name || 'â€”'}</td><td>{item.eid}</td><td>{item.serial}</td><td>{formatIndiaDateTime(item.assigned_at)}</td>
                 </tr>
               ))}
             </tbody>
@@ -2644,6 +2816,99 @@ function App() {
             </section>
           )}
 
+          {activePage === 'employee-project-leads' && signedInStaff.role === 'admin' && (
+            <section className="cc-inventory-page">
+              <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>&#8592; Back to workspace</button>
+              <p className="section-kicker">ADMIN ONLY / EMPLOYEE DIRECTORY</p>
+              <h1>Leads &amp; Projects dashboard.</h1>
+              <p className="login-description">Manage independent Enterprise ID to Project and Lead mappings. This data is separate from MyPMO and event registration.</p>
+
+              {employeeProjectLeadError && <div className="cc-error">{employeeProjectLeadError}</div>}
+              {employeeProjectLeadMessage && <p role="status">{employeeProjectLeadMessage}</p>}
+
+              <div className="cc-inventory-panel" style={{marginTop:'20px'}}>
+                <h2>Upload Excel mapping</h2>
+                <p>Required columns: Enterprise id, Project, lead. Existing Enterprise IDs are updated when imported again.</p>
+                <input
+                  type="file"
+                  accept=".xlsx,.xls,.csv"
+                  aria-label="Choose Project and Lead Excel file"
+                  onChange={event => void previewEmployeeProjectLeadFile(event.target.files?.[0] || null)}
+                />
+                {employeeProjectLeadFile && <p>Selected: {employeeProjectLeadFile.name}</p>}
+                {employeeProjectLeadPreview.length > 0 && (
+                  <>
+                    <p>
+                      Valid: {employeeProjectLeadPreview.filter(row => !row.issue).length}
+                      {' Â· '}Needs attention: {employeeProjectLeadPreview.filter(row => !!row.issue).length}
+                    </p>
+                    <div style={{overflowX:'auto',maxHeight:'320px'}}>
+                      <table style={{width:'100%',borderCollapse:'collapse',textAlign:'left',minWidth:'700px'}}>
+                        <thead><tr><th>Enterprise ID</th><th>Project</th><th>Lead</th><th>Validation</th></tr></thead>
+                        <tbody>
+                          {employeeProjectLeadPreview.map((row,index) => (
+                            <tr key={`${row.enterpriseId}-${index}`}>
+                              <td>{row.enterpriseId || '-'}</td><td>{row.project || '-'}</td><td>{row.lead || '-'}</td>
+                              <td>{row.issue ? <strong>{row.issue}</strong> : 'Valid'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <button className="cc-primary-action" type="button" onClick={() => void importEmployeeProjectLeads()} disabled={employeeProjectLeadImportBusy || !employeeProjectLeadPreview.some(row => !row.issue)}>
+                      {employeeProjectLeadImportBusy ? 'Importing...' : `Import ${employeeProjectLeadPreview.filter(row => !row.issue).length} valid rows`}
+                    </button>
+                  </>
+                )}
+              </div>
+
+              <div className="cc-inventory-panel" style={{marginTop:'20px'}}>
+                <div style={{display:'flex',gap:'12px',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap'}}>
+                  <h2>Employee Project &amp; Lead records</h2>
+                  <div style={{display:'flex',gap:'10px',flexWrap:'wrap'}}>
+                    <button className="cc-primary-action" type="button" onClick={() => void loadEmployeeProjectLeads()} disabled={employeeProjectLeadBusy}>
+                      {employeeProjectLeadBusy ? 'Refreshing...' : 'Refresh'}
+                    </button>
+                    <button className="cc-quick-action" type="button" onClick={downloadEmployeeProjectLeadCsv} disabled={!filteredEmployeeProjectLeadRows.length}>
+                      Export filtered CSV
+                    </button>
+                  </div>
+                </div>
+                <div className="cc-attendee-summary cc-dashboard-summary" style={{marginTop:'16px'}}>
+                  <div className="summary-saved"><span>Total mappings</span><strong>{employeeProjectLeadRows.length}</strong></div>
+                  <div className="summary-registered"><span>Projects</span><strong>{new Set(employeeProjectLeadRows.map(row => row.project)).size}</strong></div>
+                  <div className="summary-checkin"><span>Leads</span><strong>{new Set(employeeProjectLeadRows.map(row => row.lead)).size}</strong></div>
+                  <div className="summary-saved"><span>Filtered records</span><strong>{filteredEmployeeProjectLeadRows.length}</strong></div>
+                </div>
+                <div style={{display:'flex',gap:'12px',flexWrap:'wrap',margin:'16px 0'}}>
+                  <input aria-label="Search Project and Lead mappings" placeholder="Search Enterprise ID, project or lead" value={employeeProjectLeadSearch} onChange={event => setEmployeeProjectLeadSearch(event.target.value)} style={{flex:'1 1 260px'}} />
+                  <select aria-label="Filter by project" value={employeeProjectLeadProjectFilter} onChange={event => setEmployeeProjectLeadProjectFilter(event.target.value)}>
+                    <option value="ALL">All projects</option>
+                    {[...new Set(employeeProjectLeadRows.map(row => row.project))].sort().map(value => <option key={value} value={value}>{value}</option>)}
+                  </select>
+                  <select aria-label="Filter by lead" value={employeeProjectLeadLeadFilter} onChange={event => setEmployeeProjectLeadLeadFilter(event.target.value)}>
+                    <option value="ALL">All leads</option>
+                    {[...new Set(employeeProjectLeadRows.map(row => row.lead))].sort().map(value => <option key={value} value={value}>{value}</option>)}
+                  </select>
+                </div>
+                <div style={{overflowX:'auto'}}>
+                  <table style={{width:'100%',borderCollapse:'collapse',textAlign:'left',minWidth:'650px'}}>
+                    <thead><tr><th>Enterprise ID</th><th>Project</th><th>Lead</th><th>Last updated</th></tr></thead>
+                    <tbody>
+                      {filteredEmployeeProjectLeadRows.map(row => (
+                        <tr key={row.enterprise_id}>
+                          <td>{row.enterprise_id}</td><td>{row.project}</td><td>{row.lead}</td>
+                          <td>{row.updated_at ? formatIndiaDateTime(row.updated_at) : '-'}</td>
+                        </tr>
+                      ))}
+                      {!filteredEmployeeProjectLeadRows.length && <tr><td colSpan={4}>{employeeProjectLeadBusy ? 'Loading records...' : 'No matching mappings found.'}</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
+                <p style={{marginTop:'14px'}}>Showing {filteredEmployeeProjectLeadRows.length} of {employeeProjectLeadRows.length} mappings.</p>
+              </div>
+            </section>
+          )}
           {activePage === 'inventory' && canManageInventory(signedInStaff) && (
             <section className="cc-inventory-page">
               <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>&#8592; Back to workspace</button>
@@ -2715,12 +2980,107 @@ function App() {
                 <button className="cc-primary-action" type="button" disabled={!inventorySerial.trim()||!inventoryEid.trim()||(!inventoryLookupAttendee)||(pendingInventoryTransportation !== null && !inventoryTransportAnswer)} onClick={()=>void inventoryAction('/api/inventory/assign',{serial:inventorySerial,eid:inventoryEid,...(pendingInventoryTransportation ? {residence_drop_availing:inventoryTransportAnswer} : {})})}>{inventoryBusy ? 'Assigning...' : pendingInventoryTransportation ? 'Confirm & Assign Band' : 'Assign Band'}</button>
               </section>
               {canManageInventory(signedInStaff) && <section className="cc-inventory-panel"><h2>Inventory list</h2><div className="cc-inventory-fields"><label>Search serial number<input placeholder="ACC099" value={inventorySearch} onChange={e=>setInventorySearch(e.target.value.toUpperCase())}/></label><button type="button" className="dashboard-signout" onClick={()=>void loadInventory()}>Refresh</button></div>
-                <div className="cc-inventory-table-wrap"><table className="cc-inventory-table"><thead><tr><th>Serial</th><th>Status</th><th>Employee ID</th><th>Attendee</th></tr></thead><tbody>{inventoryBands.filter(b=>!inventorySearch||b.serial.includes(inventorySearch)).slice(0,10).map(b=><tr key={b.serial}><td>{b.serial}</td><td>{b.status}</td><td>{b.attendee_eid||'—'}</td><td>{b.name||'—'}</td></tr>)}</tbody></table></div><p className="login-description">Showing up to 10 latest inventory records.</p>
+                <div className="cc-inventory-table-wrap"><table className="cc-inventory-table"><thead><tr><th>Serial</th><th>Status</th><th>Employee ID</th><th>Attendee</th></tr></thead><tbody>{inventoryBands.filter(b=>!inventorySearch||b.serial.includes(inventorySearch)).slice(0,10).map(b=><tr key={b.serial}><td>{b.serial}</td><td>{b.status}</td><td>{b.attendee_eid||'â€”'}</td><td>{b.name||'â€”'}</td></tr>)}</tbody></table></div><p className="login-description">Showing up to 10 latest inventory records.</p>
               </section>}
               </div>
             </section>
           )}
 
+          {activePage === 'attendees' && canViewAttendees(signedInStaff) && !canManageRegistration(signedInStaff) && (
+            <section className="cc-feature-page">
+              <button className="dashboard-signout" type="button" onClick={() => setActivePage('home')}>&#8592; Back to workspace</button>
+
+              <div className="registration-summary">
+                <div className="registration-stat">
+                  <span>Total attendees</span>
+                  <strong>{attendees.length}</strong>
+                </div>
+                <div className="registration-stat">
+                  <span>Registered</span>
+                  <strong>{registeredCount}</strong>
+                </div>
+                <div className="registration-stat">
+                  <span>Pending</span>
+                  <strong>{pendingCount}</strong>
+                </div>
+                <div className="registration-stat">
+                  <span>Cancelled</span>
+                  <strong>{cancelledCount}</strong>
+                </div>
+              </div>
+
+              <div className="registration-toolbar">
+                <input
+                  className="registration-search"
+                  type="search"
+                  value={searchTerm}
+                  onChange={(event) => setSearchTerm(event.target.value)}
+                  placeholder="Search by name, employee ID or department"
+                  aria-label="Search attendees by name, employee ID or department"
+                />
+                <select
+                  className="registration-filter"
+                  value={registrationFilter}
+                  onChange={(event) => setRegistrationFilter(event.target.value as RegistrationFilter)}
+                  aria-label="Filter attendees by registration status"
+                >
+                  <option value="All">All statuses</option>
+                  <option value="Registered">Registered</option>
+                  <option value="Pending">Pending</option>
+                  <option value="Cancelled">Cancelled</option>
+                </select>
+              </div>
+
+              <div className="registration-table-wrap">
+                {isLoadingAttendees && <p role="status">Loading attendee directory...</p>}
+
+                <table className="registration-table">
+                  <thead>
+                    <tr>
+                      <th>Employee ID</th>
+                      <th>Attendee</th>
+                      <th>Project / Department</th>
+                      <th>MyPMO Status</th>
+                      <th>Registration Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredAttendees.map((attendee) => (
+                      <tr key={attendee.eid}>
+                        <td><span className="attendee-eid">{attendee.eid}</span></td>
+                        <td><div className="attendee-name">{attendee.name}</div></td>
+                        <td>{attendee.project || attendee.department}</td>
+                        <td>
+                          {attendee.mypmo_available === 1
+                            ? <span className="status-available">Available</span>
+                            : <span className="status-unavailable">Not Available</span>}
+                        </td>
+                        <td>
+                          <span className={`registration-status status-${attendee.status.toLowerCase()}`}>
+                            {attendee.status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+
+                {filteredAttendees.length === 0 && !isLoadingAttendees && (
+                  <div className="registration-empty">
+                    <h3>No attendees found</h3>
+                    <p>Try a different search term or select another status.</p>
+                    <button
+                      type="button"
+                      className="registration-reset"
+                      onClick={() => { setSearchTerm(''); setRegistrationFilter('All') }}
+                    >
+                      Clear search and filters
+                    </button>
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
           {activePage === 'registration' && canManageRegistration(signedInStaff) && (
 
             <>
@@ -3198,7 +3558,7 @@ function App() {
         <section className="public-registration-page">
           <div className="public-registration-card">
             <div className="card-emblem">CC</div>
-            <p className="section-kicker">CHAMPION CELEBRATION · LIVE REGISTRATION</p>
+            <p className="section-kicker">CHAMPION CELEBRATION Â· LIVE REGISTRATION</p>
             {publicSubmitted ? (
               <div className="cc-checkin-success" role="status">
                 <h2>REGISTRATION SUBMITTED</h2>
@@ -3287,3 +3647,6 @@ function App() {
 }
 
 export default App
+
+
+
