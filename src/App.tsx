@@ -481,38 +481,41 @@ function App() {
         raw: false,
       })
       if (!rawRows.length) throw new Error('No employee mapping rows were found.')
-      if (rawRows.length > 5000) throw new Error('Maximum supported upload size is 5,000 rows.')
+      if (rawRows.length > 10000) throw new Error('Maximum supported upload size is 10,000 rows.')
 
       const normalizeHeader = (value: string) => value.toLowerCase().replace(/[^a-z]/g, '')
-      const first = rawRows[0]
-      const headers = Object.keys(first)
+      const headers = Object.keys(rawRows[0])
       const eidHeader = headers.find(key => normalizeHeader(key) === 'enterpriseid')
       const projectHeader = headers.find(key => normalizeHeader(key) === 'project')
       const leadHeader = headers.find(key => normalizeHeader(key) === 'lead')
 
-      if (!eidHeader || !projectHeader || !leadHeader) {
-        throw new Error('Required columns: Enterprise id, Project, lead.')
+      if (!eidHeader || !projectHeader) {
+        throw new Error('Required columns: Enterprise id and Project. Lead is optional.')
       }
 
       const seen = new Set<string>()
       const preview = rawRows.map(record => {
         const enterpriseId = String(record[eidHeader] ?? '').trim()
         const project = String(record[projectHeader] ?? '').trim()
-        const lead = String(record[leadHeader] ?? '').trim()
+        const lead = leadHeader ? String(record[leadHeader] ?? '').trim() : ''
         const key = enterpriseId.toLowerCase()
         let issue = ''
 
-        if (!enterpriseId || !project || !lead) issue = 'Missing Enterprise ID, Project or Lead'
+        if (!enterpriseId || !project) issue = 'Missing Enterprise ID or Project'
         else if (enterpriseId.length > 150 || project.length > 150 || lead.length > 150) issue = 'A field exceeds 150 characters'
         else if (seen.has(key)) issue = 'Duplicate Enterprise ID in this file'
-        if (key) seen.add(key)
 
+        if (!issue && key) seen.add(key)
         return { enterpriseId, project, lead, issue }
       })
 
       setEmployeeProjectLeadPreview(preview)
+      const validCount = preview.filter(row => !row.issue).length
+      const duplicateCount = preview.filter(row => row.issue.includes('Duplicate')).length
+      const invalidCount = preview.filter(row => row.issue && !row.issue.includes('Duplicate')).length
+
       setEmployeeProjectLeadMessage(
-        `Preview ready: ${preview.filter(row => !row.issue).length} valid rows, ${preview.filter(row => row.issue).length} rows needing attention.`,
+        `Preview ready: ${preview.length} total rows, ${validCount} valid, ${duplicateCount} duplicates, ${invalidCount} invalid.`,
       )
     } catch (error) {
       setEmployeeProjectLeadError(error instanceof Error ? error.message : 'Could not read this workbook.')
@@ -526,35 +529,63 @@ function App() {
       return
     }
 
+    const batchSize = 500
+    const totalBatches = Math.ceil(validRows.length / batchSize)
+    let inserted = 0
+    let updated = 0
+    let skipped = 0
+    let completedBatches = 0
+
     setEmployeeProjectLeadImportBusy(true)
     setEmployeeProjectLeadError('')
-    setEmployeeProjectLeadMessage('')
+    setEmployeeProjectLeadMessage(`Starting import: ${validRows.length} valid rows in ${totalBatches} batches...`)
+
     try {
-      const response = await fetch('/api/admin/employee-project-leads/import', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          rows: validRows.map(row => ({
-            enterpriseId: row.enterpriseId,
-            project: row.project,
-            lead: row.lead,
-          })),
-        }),
-      })
-      const data = await response.json()
-      if (!response.ok) throw new Error(data.error || 'Import failed.')
-      setEmployeeProjectLeadMessage(data.message || 'Import completed.')
+      for (let offset = 0; offset < validRows.length; offset += batchSize) {
+        const batch = validRows.slice(offset, offset + batchSize)
+        const batchNumber = Math.floor(offset / batchSize) + 1
+
+        setEmployeeProjectLeadMessage(
+          `Uploading batch ${batchNumber} of ${totalBatches} (${offset + batch.length} of ${validRows.length} rows)...`,
+        )
+
+        const response = await fetch('/api/admin/employee-project-leads/import', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            rows: batch.map(row => ({
+              enterpriseId: row.enterpriseId,
+              project: row.project,
+              lead: row.lead,
+            })),
+          }),
+        })
+
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error || `Import failed on batch ${batchNumber}.`)
+
+        inserted += Number(data.inserted || 0)
+        updated += Number(data.updated || 0)
+        skipped += Number(data.skipped || 0)
+        completedBatches++
+      }
+
+      setEmployeeProjectLeadMessage(
+        `Import complete: ${inserted} inserted, ${updated} updated, ${skipped} skipped. ${completedBatches} batches completed.`,
+      )
       setEmployeeProjectLeadFile(null)
       setEmployeeProjectLeadPreview([])
       await loadEmployeeProjectLeads()
     } catch (error) {
-      setEmployeeProjectLeadError(error instanceof Error ? error.message : 'Import failed.')
+      const detail = error instanceof Error ? error.message : 'Import failed.'
+      setEmployeeProjectLeadError(
+        `${detail} Completed ${completedBatches} of ${totalBatches} batches: ${inserted} inserted, ${updated} updated, ${skipped} skipped. Refresh mappings before retrying.`,
+      )
     } finally {
       setEmployeeProjectLeadImportBusy(false)
     }
   }
-
   const filteredEmployeeProjectLeadRows = employeeProjectLeadRows.filter(row =>
     (employeeProjectLeadProjectFilter === 'ALL' || row.project === employeeProjectLeadProjectFilter) &&
     (employeeProjectLeadLeadFilter === 'ALL' || row.lead === employeeProjectLeadLeadFilter) &&
@@ -2828,7 +2859,7 @@ function App() {
 
               <div className="cc-inventory-panel" style={{marginTop:'20px'}}>
                 <h2>Upload Excel mapping</h2>
-                <p>Required columns: Enterprise id, Project, lead. Existing Enterprise IDs are updated when imported again.</p>
+                <p>Required columns: Enterprise id and Project. Lead is optional. Upload up to 10,000 rows. Existing Enterprise IDs are updated; a blank Lead will not erase an existing Lead.</p>
                 <input
                   type="file"
                   accept=".xlsx,.xls,.csv"
@@ -2839,8 +2870,10 @@ function App() {
                 {employeeProjectLeadPreview.length > 0 && (
                   <>
                     <p>
-                      Valid: {employeeProjectLeadPreview.filter(row => !row.issue).length}
-                      {' Â· '}Needs attention: {employeeProjectLeadPreview.filter(row => !!row.issue).length}
+                      Total: {employeeProjectLeadPreview.length}
+                      {' · '}Valid: {employeeProjectLeadPreview.filter(row => !row.issue).length}
+                      {' · '}Duplicates: {employeeProjectLeadPreview.filter(row => row.issue.includes('Duplicate')).length}
+                      {' · '}Invalid: {employeeProjectLeadPreview.filter(row => row.issue && !row.issue.includes('Duplicate')).length}
                     </p>
                     <div style={{overflowX:'auto',maxHeight:'320px'}}>
                       <table style={{width:'100%',borderCollapse:'collapse',textAlign:'left',minWidth:'700px'}}>

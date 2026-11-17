@@ -1201,13 +1201,14 @@ export default {
         if (!isObject(payload) || !Array.isArray(payload.rows)) {
           return json({ error: 'Provide an array of mapping rows.' }, 400)
         }
-        if (payload.rows.length === 0 || payload.rows.length > 5000) {
-          return json({ error: 'Upload between 1 and 5000 rows per import.' }, 400)
+        if (payload.rows.length === 0 || payload.rows.length > 500) {
+          return json({ error: 'Upload between 1 and 500 rows per batch.' }, 400)
         }
 
-        let inserted = 0
-        let updated = 0
+        const validRows: Array<{ enterpriseId: string; project: string; lead: string }> = []
+        const seen = new Set<string>()
         let skipped = 0
+        let duplicates = 0
 
         for (const item of payload.rows) {
           if (!isObject(item)) {
@@ -1219,26 +1220,68 @@ export default {
           const project = String(item.project ?? '').trim()
           const lead = String(item.lead ?? '').trim()
 
-          if (!enterpriseId || !project || !lead ||
+          if (!enterpriseId || !project ||
               enterpriseId.length > 150 || project.length > 150 || lead.length > 150) {
             skipped++
             continue
           }
 
-          const existing = await env.DB.prepare(
-            'SELECT enterprise_id FROM employee_project_leads WHERE enterprise_id = ?'
-          ).bind(enterpriseId).first<{ enterprise_id: string }>()
+          const key = enterpriseId.toLowerCase()
+          if (seen.has(key)) {
+            skipped++
+            duplicates++
+            continue
+          }
+          seen.add(key)
+          validRows.push({ enterpriseId, project, lead })
+        }
 
-          await env.DB.prepare(`
-            INSERT INTO employee_project_leads (enterprise_id, project, lead)
-            VALUES (?, ?, ?)
-            ON CONFLICT(enterprise_id) DO UPDATE SET
-              project = excluded.project,
-              lead = excluded.lead,
-              updated_at = CURRENT_TIMESTAMP
-          `).bind(enterpriseId, project, lead).run()
+        if (!validRows.length) {
+          return json({
+            ok: true,
+            inserted: 0,
+            updated: 0,
+            skipped,
+            duplicates,
+            message: `No valid rows to import: ${skipped} skipped, ${duplicates} duplicates.`
+          })
+        }
 
-          if (existing) updated++
+        const existingIds = new Set<string>()
+        for (let offset = 0; offset < validRows.length; offset += 100) {
+          const lookupRows = validRows.slice(offset, offset + 100)
+          const placeholders = lookupRows.map(() => '?').join(', ')
+          const existingResult = await env.DB.prepare(`
+            SELECT enterprise_id
+            FROM employee_project_leads
+            WHERE enterprise_id IN (${placeholders})
+          `).bind(...lookupRows.map(row => row.enterpriseId)).all<{ enterprise_id: string }>()
+
+          for (const row of existingResult.results || []) {
+            existingIds.add(row.enterprise_id.toLowerCase())
+          }
+        }
+
+        const statements = validRows.map(row => env.DB.prepare(`
+          INSERT INTO employee_project_leads (enterprise_id, project, lead)
+          VALUES (?, ?, ?)
+          ON CONFLICT(enterprise_id) DO UPDATE SET
+            project = excluded.project,
+            lead = CASE
+              WHEN excluded.lead = '' THEN employee_project_leads.lead
+              ELSE excluded.lead
+            END,
+            updated_at = CURRENT_TIMESTAMP
+        `).bind(row.enterpriseId, row.project, row.lead))
+
+        for (let offset = 0; offset < statements.length; offset += 100) {
+          await env.DB.batch(statements.slice(offset, offset + 100))
+        }
+
+        let inserted = 0
+        let updated = 0
+        for (const row of validRows) {
+          if (existingIds.has(row.enterpriseId.toLowerCase())) updated++
           else inserted++
         }
 
@@ -1247,11 +1290,12 @@ export default {
           inserted,
           updated,
           skipped,
-          message: `Import complete: ${inserted} inserted, ${updated} updated, ${skipped} skipped.`
+          duplicates,
+          message: `Batch complete: ${inserted} inserted, ${updated} updated, ${skipped} skipped, ${duplicates} duplicates.`
         })
       } catch (error) {
         console.error('Employee Project and Lead import failed:', error)
-        return json({ error: 'Import failed. No production database was changed.' }, 500)
+        return json({ error: 'Import failed. Earlier batches may already have completed; refresh mappings before retrying.' }, 500)
       }
     }
     if (apiPath === '/api/emergency-lookup' && request.method === 'GET') {
