@@ -4384,3 +4384,118 @@ button:disabled { cursor: not-allowed; opacity: .58; }
   .cc-command-heading-content { align-items:flex-start; flex-direction:column; gap:10px; }
   .cc-event-banner { max-height:130px; border-radius:12px; margin-bottom:15px; }
 }
+/* Integrated Roche–Accenture staff dashboard identity */
+.cc-command-heading {
+  display: block;
+}
+
+.cc-event-banner {
+  display: none;
+}
+
+.cc-command-heading-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 20px;
+  padding: 10px 4px 24px;
+}
+
+.cc-heading-copy {
+  min-width: 0;
+}
+
+.cc-partner-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.cc-roche-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #ead9b5;
+  font-family: Georgia, serif;
+  font-weight: 700;
+  letter-spacing: -.03em;
+}
+
+.cc-roche-mark::before {
+  content: "⬡";
+  color: #d8b879;
+  font-family: Arial, sans-serif;
+  font-size: 25px;
+  line-height: 1;
+}
+
+.cc-accenture-mark {
+  color: #ead9b5;
+  font-size: 16px;
+  font-weight: 750;
+  letter-spacing: -.04em;
+}
+
+.cc-accenture-mark sup {
+  color: #d6b875;
+  font-size: 19px;
+  font-weight: 900;
+  margin-right: 2px;
+}
+
+.cc-brand-divider {
+  width: 1px;
+  height: 25px;
+  background: rgba(216, 184, 121, .4);
+}
+
+.cc-nav-title {
+  margin-left: 8px;
+  color: #f3e8d2;
+  font-family: 'Playfair Display', Georgia, serif;
+  font-size: clamp(16px, 1.8vw, 22px);
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.cc-partner-lockup {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 17px;
+}
+
+.cc-partner-lockup .cc-roche-mark {
+  font-size: 20px;
+}
+
+.cc-partner-lockup .cc-roche-mark::before {
+  font-size: 32px;
+}
+
+.cc-partner-lockup .cc-accenture-mark {
+  font-size: 21px;
+}
+
+.cc-heading-copy .section-kicker {
+  margin-bottom: 10px;
+}
+
+@media (max-width: 700px) {
+  .cc-partner-brand {
+    gap: 8px;
+  }
+
+  .cc-nav-title {
+    width: 100%;
+    margin-left: 0;
+    font-size: 16px;
+  }
+
+  .cc-command-heading-content {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+}

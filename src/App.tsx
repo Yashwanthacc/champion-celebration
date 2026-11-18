@@ -2288,12 +2288,11 @@ function App() {
 
         <nav className="topbar">
 
-          <div className="brand">
-
-            <span className="brand-mark">CC</span>
-
-            <span>CHAMPION <strong>CELEBRATION</strong></span>
-
+          <div className="brand cc-partner-brand">
+            <span className="cc-roche-mark">Roche</span>
+            <span className="cc-brand-divider" aria-hidden="true"></span>
+            <span className="cc-accenture-mark"><sup>&gt;</sup>accenture</span>
+            <span className="cc-nav-title">Celebrating Success</span>
           </div>
 
           <div className="topbar-actions">
@@ -2333,15 +2332,20 @@ function App() {
 
               <div className="cc-command-main">
                 <header className="cc-command-heading">
-                  <img className="cc-event-banner" src="/roche-accenture-banner.png" alt="Roche and Accenture celebration banner" />
                   <div className="cc-command-heading-content">
-                    <div>
+                    <div className="cc-heading-copy">
+                      <div className="cc-partner-lockup" aria-label="Roche and Accenture">
+                        <span className="cc-roche-mark">Roche</span>
+                        <span className="cc-brand-divider" aria-hidden="true"></span>
+                        <span className="cc-accenture-mark"><sup>&gt;</sup>accenture</span>
+                      </div>
                       <p className="section-kicker">CHAMPION CELEBRATION / STAFF PORTAL</p>
                       <h1>Celebrating Success</h1>
                       <p>Everything your team needs to run a smooth event, in one place.</p>
                     </div>
                     <span className="cc-command-date">EVENT OPERATIONS</span>
                   </div>
+
                 </header>
 
                 <section className="cc-metric-strip" aria-label="Event overview">
