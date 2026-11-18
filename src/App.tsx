@@ -2333,12 +2333,15 @@ function App() {
 
               <div className="cc-command-main">
                 <header className="cc-command-heading">
-                  <div>
-                    <p className="section-kicker">CHAMPION CELEBRATION / STAFF PORTAL</p>
-                    <h1>Good to have you back.</h1>
-                    <p>Everything your team needs to run a smooth event, in one place.</p>
+                  <img className="cc-event-banner" src="/roche-accenture-banner.png" alt="Roche and Accenture celebration banner" />
+                  <div className="cc-command-heading-content">
+                    <div>
+                      <p className="section-kicker">CHAMPION CELEBRATION / STAFF PORTAL</p>
+                      <h1>Celebrating Success</h1>
+                      <p>Everything your team needs to run a smooth event, in one place.</p>
+                    </div>
+                    <span className="cc-command-date">EVENT OPERATIONS</span>
                   </div>
-                  <span className="cc-command-date">EVENT OPERATIONS</span>
                 </header>
 
                 <section className="cc-metric-strip" aria-label="Event overview">
