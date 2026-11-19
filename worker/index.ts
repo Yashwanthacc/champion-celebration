@@ -104,7 +104,8 @@ async function readJson(request: Request): Promise<unknown> { try { return await
 function randomToken() { const bytes = new Uint8Array(32); crypto.getRandomValues(bytes); return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('') }
 
 function canRegister(staff: Staff) {
-  return staff.role === 'admin' || staff.role === 'registration'
+  return staff.role === 'admin' || staff.role === 'registration' ||
+    (staff.role === 'inventory' && ['Aniruddha', 'Neelima'].includes(staff.staff_id))
 }
 
 function canViewAttendees(staff: Staff) {
@@ -135,7 +136,7 @@ export default {
 
       try { const staff = await authenticate(request, env); if (!staff) return json({ error: 'Not signed in' }, 401); return json({ ok: true, staff: { id: staff.id, staffId: staff.staff_id, role: staff.role } }) }
 
-      catch { return json({ error: 'Unable to validate session' }, 500) }
+      catch (error) { console.error('SESSION_VALIDATION_ERROR:', error instanceof Error ? error.stack : String(error)); return json({ error: 'Unable to validate session' }, 500) }
 
     }
 
@@ -330,13 +331,13 @@ export default {
 
     let staff: Staff | null
 
-    try { staff = await authenticate(request, env) } catch { return json({ error: 'Unable to validate session' }, 500) }
+    try { staff = await authenticate(request, env) } catch (error) { console.error('SESSION_VALIDATION_ERROR:', error instanceof Error ? error.stack : String(error)); return json({ error: 'Unable to validate session' }, 500) }
 
     if (!staff) return json({ error: 'Please log in again' }, 401)
 
     if (apiPath === '/api/wristbands') return json({error:'Legacy QR wristbands are disabled. Use preprinted inventory bands.'},410)
 
-    // OPTION 2 ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â separate inventory-first wristbands. Legacy /api/wristbands remains unchanged.
+    // OPTION 2 ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â separate inventory-first wristbands. Legacy /api/wristbands remains unchanged.
 
     if (apiPath === '/api/admin/transportation-dashboard' && request.method === 'GET') {
       if (staff.role !== 'admin') {
@@ -712,7 +713,7 @@ export default {
       try {
         const attendee = await env.DB.prepare(`
           SELECT eid, name, department, status, residence_drop_required
-          FROM attendees WHERE eid = ?
+          FROM attendees WHERE eid = ? COLLATE NOCASE
         `).bind(eid).first<{
           eid: string; name: string; department: string | null;
           status: string; residence_drop_required: string | null
@@ -721,7 +722,7 @@ export default {
         if (attendee.status !== 'Registered') return json({ error: 'Only registered attendees can be assigned a wristband' }, 400)
         const already = await env.DB.prepare(
           "SELECT serial FROM wristband_inventory WHERE attendee_eid = ?"
-        ).bind(eid).first<{ serial: string }>()
+        ).bind(attendee.eid).first<{ serial: string }>()
         if (already) return json({ error: `This attendee already has wristband ${already.serial}` }, 409)
         return json({
           ok: true,
@@ -737,6 +738,7 @@ export default {
         return json({ error: 'Could not look up attendee' }, 500)
       }
     }
+
     if (apiPath === '/api/inventory/assign' && request.method === 'POST') {
       if (!canAssignBand(staff.role)) return json({error:'You do not have permission to assign wristbands'},403)
 
@@ -755,11 +757,12 @@ export default {
       }
 
       const attendee = await env.DB.prepare(
-        "SELECT eid,name,email,department,status,residence_drop_required FROM attendees WHERE eid=?"
+        "SELECT eid,name,email,department,status,residence_drop_required FROM attendees WHERE eid = ? COLLATE NOCASE"
       ).bind(eid).first<{eid:string;name:string;email:string;department:string;status:string;residence_drop_required:string|null}>()
 
       if (!attendee) return json({error:'Attendee not found. Register walk-ins in Attendees first.'},404)
       if (attendee.status !== 'Registered') return json({error:'Only registered attendees can be assigned a wristband'},400)
+      const attendeeEid = attendee.eid
 
       const band = await env.DB.prepare(
         "SELECT id,serial,status,attendee_eid FROM wristband_inventory WHERE serial=?"
@@ -770,7 +773,7 @@ export default {
 
       const already = await env.DB.prepare(
         "SELECT serial FROM wristband_inventory WHERE attendee_eid=?"
-      ).bind(eid).first<{serial:string}>()
+      ).bind(attendeeEid).first<{serial:string}>()
 
       if (already) return json({error:`This attendee already has wristband ${already.serial}`},409)
 
@@ -788,10 +791,10 @@ export default {
         const statements = [
           env.DB.prepare(
             "UPDATE wristband_inventory SET status='Assigned',attendee_eid=?,assigned_at=CURRENT_TIMESTAMP WHERE id=? AND status='Available' AND attendee_eid IS NULL"
-          ).bind(eid,band.id),
+          ).bind(attendeeEid,band.id),
           env.DB.prepare(
             "INSERT INTO wristband_inventory_audit (id,wristband_id,serial,attendee_eid,action,performed_by) SELECT ?,?,?,?,'ASSIGNED',? WHERE changes()=1 AND EXISTS (SELECT 1 FROM wristband_inventory WHERE id=? AND status='Assigned' AND attendee_eid=?)"
-          ).bind(crypto.randomUUID(),band.id,serial,eid,staff.id,band.id,eid),
+          ).bind(crypto.randomUUID(),band.id,serial,attendeeEid,staff.id,band.id,attendeeEid),
           ...(originalTransportOptIn === 'YES' ? [
             env.DB.prepare(`
               INSERT INTO transportation_confirmations
@@ -806,7 +809,7 @@ export default {
                 confirmed_answer=excluded.confirmed_answer,
                 confirmed_by=excluded.confirmed_by,
                 confirmed_at=CURRENT_TIMESTAMP
-            `).bind(crypto.randomUUID(),eid,band.id,serial,transportAnswer,staff.id,band.id,eid)
+            `).bind(crypto.randomUUID(),attendeeEid,band.id,serial,transportAnswer,staff.id,band.id,attendeeEid)
           ] : [])
         ]
 
@@ -1668,6 +1671,7 @@ export default {
   },
 
 } satisfies ExportedHandler<Env>
+
 
 
 

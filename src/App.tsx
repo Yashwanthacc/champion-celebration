@@ -151,7 +151,8 @@ type TransportationDashboard = {
   rows: TransportationDashboardRow[]
 }
 function canManageRegistration(staff: Staff | null) {
-  return staff?.role === 'admin' || staff?.role === 'registration'
+  return staff?.role === 'admin' || staff?.role === 'registration' ||
+    (staff?.role === 'inventory' && ['Aniruddha', 'Neelima'].includes(staff.staffId))
 }
 function canViewAttendees(staff: Staff | null) {
   return staff !== null && ['admin', 'registration', 'inventory', 'checkin'].includes(staff.role)
@@ -997,6 +998,9 @@ function App() {
           contact_number: publicContact.trim(),
           family_emergency_contact_number: publicEmergencyContact.trim(),
           colleague_emergency_contact_number: publicColleagueContact.trim(),
+          colleague_enterprise_id: publicColleagueEnterpriseId.trim(),
+          family_emergency_contact_name: publicFamilyContactName.trim(),
+          family_emergency_contact_relation: publicFamilyContactRelation.trim(),
           residential_address: publicResidentialAddress.trim(),
         }),
       })
