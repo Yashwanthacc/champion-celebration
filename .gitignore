@@ -11,3 +11,19 @@ dist/
 .dev.vars
 .wrangler/
 local-staff-credentials.txt
+
+# Local backups and diagnostic artifacts
+*.bak
+*.backup*
+*.before-*
+*.recovery*
+*.transport-backup
+dashboard-ui-backup-*/
+local-fix-backup/
+*diagnostic*.txt
+dashboard-ui-review.zip
+local-prereg-repair.sql
+*production-backup*.sql
+*pre-migration-backup*.sql
+provision-local-staff.mjs
+set-local-staff-passwords.mjs
